@@ -97,6 +97,24 @@ describe("types", () => {
 		expectTypeOf<Facade["name"]>().toEqualTypeOf<() => string>();
 	});
 
+	it.effect("runs a method that may return a promise as an Effect, whichever it returns", () =>
+		Effect.gen(function* () {
+			class Converter {
+				convert(value: number): number | Promise<number> {
+					return value > 0 ? value * 2 : Promise.resolve(-value);
+				}
+			}
+			const facade = effectify(new Converter(), { name: "Converter", spec: { methods: ["convert"], async: { convert: true } } }, {}, classify) as unknown as Effectified<
+				Converter,
+				TestError,
+				never
+			>;
+			expectTypeOf(facade.convert).returns.toEqualTypeOf<Effect.Effect<number, TestError>>();
+			expect(yield* facade.convert(2)).toBe(4);
+			expect(yield* facade.convert(-3)).toBe(3);
+		}),
+	);
+
 	it("turns async iterables into streams", () => {
 		expectTypeOf<ReturnType<ConnectionFacade["rows"]>>().toEqualTypeOf<Stream.Stream<number, TestError>>();
 	});

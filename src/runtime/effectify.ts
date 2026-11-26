@@ -73,13 +73,13 @@ export type Resolved<V, E, H extends HandleEntry> = [HandleOf<V, H>] extends [ne
 /** What a method's result becomes in a handle's facade: a promise an `Effect`, an async iterable a `Stream`, a handle its facade. */
 export type MethodResult<R, E, H extends HandleEntry> = IsAny<R> extends true
 	? R
-	: R extends PromiseLike<infer V>
-		? Resolved<V, E, H>
-		: IsHandle<R, H> extends true
-			? Lift<R, H>
-			: R extends AsyncIterable<infer V>
-				? Stream.Stream<V, E>
-				: R;
+	: // Not distributed: a method that may return a promise (`X | Promise<X>`) runs as an Effect of `X` either way.
+		[Extract<R, PromiseLike<unknown>>] extends [never]
+		? MethodValue<R, E, H>
+		: Resolved<Awaited<R>, E, H>;
+
+// What a method's result that is no promise becomes: a handle its facade, an async iterable a `Stream`.
+type MethodValue<R, E, H extends HandleEntry> = IsHandle<R, H> extends true ? Lift<R, H> : R extends AsyncIterable<infer V> ? Stream.Stream<V, E> : R;
 
 /** What an async iterable becomes in a facade: a `Stream` of what it yields. */
 export type Streamed<R, E> = R extends AsyncIterable<infer V> ? Stream.Stream<V, E> : never;
