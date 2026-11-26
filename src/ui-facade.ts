@@ -59,16 +59,24 @@ const DOM_EVENTS = new Set(
 	).split(" "),
 );
 
-/** One element's binding: its definition imported, every settable property and custom event typed by upstream. */
+/**
+ * One element's binding: its definition imported, every settable property and custom event typed by upstream. The
+ * binding's type is written out: inferred, its declaration would expand each property's type, which may name a
+ * type upstream does not export (Web Awesome's `Validator`), and no `.d.ts` could be emitted for it.
+ */
 function elementSource(element: Element, recipe: Recipe, header: (what: string) => string): string {
 	const untyped = recipe.derived.includes(element.tag);
 	const properties = element.properties.filter((property) => recipe.methods[`${element.tag}.${property}`] !== "exclude");
 	// `<tag>@<event>`: an event and a property may share a name (`md-dialog`'s `open`).
 	const events = element.events.filter((event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude");
+	const tag = JSON.stringify(element.tag);
+	const propertyType = (property: string) => `Of[${JSON.stringify(property)}]`;
+	const eventType = (event: string) => `DetailOf<${JSON.stringify(event)}>`;
 	return [
 		header(`the Effect UI binding of <${element.tag}>`).trimEnd(),
 		`import ${JSON.stringify(element.definition)};`,
 		`import { Html } from "@effect/ui/html";`,
+		`import type { Schema } from "effect";`,
 		`import { ${[
 			...(events.length > 0 ? ["type DetailOf"] : []),
 			...(changesSource(element, properties).length > 0 ? ["changesMount"] : []),
@@ -78,19 +86,27 @@ function elementSource(element: Element, recipe: Recipe, header: (what: string) 
 		untyped
 			? "// Upstream's types do not name this element in HTMLElementTagNameMap: its properties are typed unknown."
 			: `/** The upstream element's type, which types the binding's properties. */`,
-		untyped ? "type Of = Record<string, unknown>;" : `type Of = HTMLElementTagNameMap[${JSON.stringify(element.tag)}]; // element: ${element.tag}`,
+		untyped ? "type Of = Record<string, unknown>;" : `type Of = HTMLElementTagNameMap[${tag}]; // element: ${element.tag}`,
+		"",
+		`/** The properties a view sets on \`<${element.tag}>\`, as upstream types them. */`,
+		`type Properties = {${properties.length === 0 ? "};" : ""}`,
+		...(properties.length === 0
+			? []
+			: [...properties.map((property) => `\treadonly ${memberName(property)}: Schema.declare<${propertyType(property)}>; // property: ${element.tag}.${property}`), "};"]),
+		"",
+		`/** The custom events of \`<${element.tag}>\`, each its \`detail\`. */`,
+		`type Events = {${events.length === 0 ? "};" : ""}`,
+		...(events.length === 0 ? [] : [...events.map((event) => `\treadonly ${memberName(event)}: Schema.declare<${eventType(event)}>;`), "};"]),
 		"",
 		`/** \`<${element.tag}>\`${element.description === "" ? "" : `: ${element.description.replace(/\*\//g, "* /")}`} */`,
-		`export const ${element.name} = Html.customElement({`,
-		`\ttag: ${JSON.stringify(element.tag)},`,
+		`export const ${element.name}: Html.CustomElementBinding<${tag}, Properties, Events> = Html.customElement({`,
+		`\ttag: ${tag},`,
 		`\tproperties: {${properties.length === 0 ? "}," : ""}`,
 		...(properties.length === 0
 			? []
-			: [...properties.map((property) => `\t\t${memberName(property)}: typed<Of[${JSON.stringify(property)}]>(), // property: ${element.tag}.${property}`), "\t},"]),
+			: [...properties.map((property) => `\t\t${memberName(property)}: typed<${propertyType(property)}>(), // property: ${element.tag}.${property}`), "\t},"]),
 		`\tevents: {${events.length === 0 ? "}," : ""}`,
-		...(events.length === 0
-			? []
-			: [...events.map((event) => `\t\t${memberName(event)}: typed<DetailOf<${JSON.stringify(event)}>>(),`), "\t},"]),
+		...(events.length === 0 ? [] : [...events.map((event) => `\t\t${memberName(event)}: typed<${eventType(event)}>(),`), "\t},"]),
 		"});",
 		...changesSource(element, properties),
 		"",

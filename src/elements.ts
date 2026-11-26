@@ -48,10 +48,11 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 			classes.set(`#${String(field(declaration, "name"))}`, declaration);
 		}
 	}
+	// Every class of the library: a field typed by one holds another element (a list's `items`), not data.
 	const elementClasses = new Set(
 		modules.flatMap((module) =>
 			asArray(field(module, "declarations"))
-				.filter((declaration) => field(declaration, "customElement") === true)
+				.filter((declaration) => field(declaration, "kind") === "class")
 				.map((declaration) => String(field(declaration, "name"))),
 		),
 	);
