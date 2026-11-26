@@ -25,6 +25,9 @@ export interface Plan {
 	readonly units: ReadonlyArray<WorkUnit>;
 }
 
+/** How many elements one test unit covers at most. */
+const ELEMENTS_PER_UNIT = 12;
+
 /** How many methods one test unit covers at most; a handle with more is split, so units stay a few hours of work. */
 const METHODS_PER_UNIT = 30;
 
@@ -51,6 +54,29 @@ export function plan(surface: Surface, recipe: Recipe, directory: string): Plan 
 			acceptance: check,
 		},
 	];
+
+	// A frontend facade's elements are tested in groups, each in a real Effect UI app in Chrome.
+	const elements = (surface.elements ?? []).filter((element) => recipe.methods[element.tag] !== "exclude");
+	for (let start = 0; start < elements.length; start += ELEMENTS_PER_UNIT) {
+		const slice = elements.slice(start, start + ELEMENTS_PER_UNIT);
+		const part = elements.length > ELEMENTS_PER_UNIT ? `-${start / ELEMENTS_PER_UNIT + 1}` : "";
+		const file = `${pkg}/test/elements${part}.test.ts`;
+		units.push({
+			id: `test-elements${part}`,
+			title: `Test ${recipe.name}'s elements${part === "" ? "" : ` (part ${part.slice(1)})`}`,
+			brief: [
+				`Write behaviour tests in ${file}, with their fixtures in ${pkg}/test/fixtures/elements${part}*.{html,ts}, for these`,
+				`elements of ${target}: ${slice.map((element) => `<${element.tag}>`).join(", ")}. Each fixture is an Effect UI component`,
+				"using the bindings (properties set from its Model, custom events and changes mounts mapped to Messages); each test opens",
+				"it with test/support/browser.ts's `fixture` and drives it in Chrome like a user (click, type, keys), asserting the Model",
+				"(printed by the fixture) and the element's state, with no page errors. Follow test/form.test.ts in the Web Awesome target",
+				"and skills/effectify-ui/SKILL.md. A binding that cannot express what the element needs is reported, not patched.",
+			].join(" "),
+			touches: [file, `${pkg}/test/fixtures/elements${part}`],
+			dependsOn: ["recipe"],
+			acceptance: check,
+		});
+	}
 
 	for (const name of Object.keys(recipe.handles)) {
 		const handle = surface.handles[name];

@@ -17,6 +17,7 @@ const out = Flag.String("out").pipe(Flag.withDescription("Where target directori
 const target = Argument.String("target").pipe(
 	Argument.withDescription("A GitHub repository URL, or an npm package name with an optional @version"),
 );
+const ui = Flag.Boolean("ui").pipe(Flag.withDescription("Make a frontend facade for Effect UI (web-component libraries are detected)"), Flag.withDefault(false));
 const packageName = Argument.String("package").pipe(Argument.withDescription("The npm name of a target already studied"));
 
 const studyCommand = Command.make("study", { target, cache, out }, ({ target, cache, out }) =>
@@ -28,10 +29,10 @@ const studyCommand = Command.make("study", { target, cache, out }, ({ target, ca
 	}),
 ).pipe(Command.withDescription("Resolve and install a target, read its surface with TypeScript 7, and scan its source"));
 
-const draftCommand = Command.make("draft", { target, cache, out }, ({ target, cache, out }) =>
+const draftCommand = Command.make("draft", { target, cache, out, ui }, ({ target, cache, out, ui }) =>
 	Effect.gen(function* () {
 		const studied = yield* study(target, cache, out);
-		const recipe = yield* draft(studied.surface, studied.scan, studied.readme, studied.files);
+		const recipe = yield* draft(studied.surface, studied.scan, studied.readme, studied.files, ui);
 		yield* Console.log(recipeSummary(recipe));
 		yield* Console.log(`wrote ${studied.files.recipe}`);
 	}),
@@ -142,11 +143,11 @@ const releaseCommand = Command.make("release", { packageName, out }, ({ packageN
 	}),
 ).pipe(Command.withDescription("Build, pack and release a facade on GitHub (from a clean, pushed tree)"));
 
-const makeCommand = Command.make("make", { target, cache, out }, ({ target, cache, out }) =>
+const makeCommand = Command.make("make", { target, cache, out, ui }, ({ target, cache, out, ui }) =>
 	Effect.gen(function* () {
 		const studied = yield* study(target, cache, out);
 		yield* Console.log(surfaceSummary(studied.surface));
-		const recipe = yield* draft(studied.surface, studied.scan, studied.readme, studied.files);
+		const recipe = yield* draft(studied.surface, studied.scan, studied.readme, studied.files, ui);
 		yield* Console.log(recipeSummary(recipe));
 		const reconciled = yield* reconcile(studied.files);
 		const overrides = Object.entries(reconciled.overrides);

@@ -4,7 +4,8 @@
 // inputs write the same bytes.
 
 import { Effect, FileSystem, Path } from "effect";
-import type { Recipe } from "./recipe.ts";
+import { facadeVersion, type Recipe } from "./recipe.ts";
+import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
@@ -20,8 +21,12 @@ export type Files = ReadonlyMap<string, string>;
 export const generate = Effect.fn("generate")(function* (surface: Surface, recipe: Recipe) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const runtimePath = path.join(path.dirname(new URL(import.meta.url).pathname), "runtime", "effectify.ts");
-	const runtime = yield* fs.readFileString(runtimePath);
+	const runtimes = path.join(path.dirname(new URL(import.meta.url).pathname), "runtime");
+	if (recipe.ui !== undefined) {
+		const uiRuntime = yield* fs.readFileString(path.join(runtimes, "ui.ts"));
+		return uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime) satisfies Files;
+	}
+	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
 		["package.json", packageJson(recipe)],
 		["tsconfig.json", TSCONFIG],
@@ -443,7 +448,7 @@ function packageJson(recipe: Recipe): string {
 		{
 			name: recipe.name,
 			// A facade's version is its upstream's: @effectified/sharp@0.35.5 wraps sharp@0.35.5.
-			version: recipe.version,
+			version: facadeVersion(recipe),
 			description: `${recipe.package} in Effect: its async calls as Effects, its iterables as Streams, its resources scoped, its failures tagged`,
 			type: "module",
 			license: "MIT",
@@ -531,5 +536,6 @@ function readme(surface: Surface, recipe: Recipe): string {
 /** Where `effectify release` publishes a facade: a release of effectified/engine tagged `<name>-v<version>`. */
 export function releaseUrl(recipe: Recipe): string {
 	const name = recipe.name.replace(/^@effectified\//, "");
-	return `https://github.com/effectified/engine/releases/download/${name}-v${recipe.version}/effectified-${name}-${recipe.version}.tgz`;
+	const version = facadeVersion(recipe);
+	return `https://github.com/effectified/engine/releases/download/${name}-v${version}/effectified-${name}-${version}.tgz`;
 }

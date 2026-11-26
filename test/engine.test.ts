@@ -101,8 +101,16 @@ const readJson = <S extends Schema.Top>(schema: S, file: string) =>
 	Schema.decodeUnknownSync(Schema.fromJsonString(schema) as unknown as Schema.Codec<S["Type"], string>)(readFileSync(file, "utf8"));
 
 describe("plan", () => {
+	it("plans a frontend facade's elements in groups, each a browser test of its own", () => {
+		const name = "awesome.me__webawesome";
+		const result = plan(readJson(Surface, join(targets, name, "surface.json")), readJson(Recipe, join(targets, name, "recipe.json")), `targets/${name}`);
+		const groups = result.units.filter((unit) => unit.id.startsWith("test-elements"));
+		expect(groups.length).toBe(7);
+		expect(groups[0]?.touches[0]).toBe("targets/awesome.me__webawesome/package/test/elements-1.test.ts");
+	});
+
 	it("plans a recipe review, test units per handle, and docs that wait for the tests", () => {
-		const name = committed[0] ?? "";
+		const name = "nodemailer";
 		const result = plan(readJson(Surface, join(targets, name, "surface.json")), readJson(Recipe, join(targets, name, "recipe.json")), `targets/${name}`);
 		expect(result.units[0]?.id).toBe("recipe");
 		expect(result.units.at(-1)?.id).toBe("docs");

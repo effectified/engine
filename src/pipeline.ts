@@ -4,10 +4,11 @@
 
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { analyze } from "./analyze.ts";
+import { manifestPath, readElements } from "./elements.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
 import { runCommand } from "./command.ts";
 import { generate, releaseUrl, writeFiles } from "./generate.ts";
-import { decodeRecipe, draftRecipe, type MethodOverride, type Recipe } from "./recipe.ts";
+import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, type Recipe } from "./recipe.ts";
 import { type Scan, scan } from "./scan.ts";
 import { decodeSurface, type Surface } from "./surface.ts";
 import { resolveTarget } from "./target.ts";
@@ -44,7 +45,9 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 	const path = yield* Path.Path;
 	const target = yield* resolveTarget(input);
 	const workspace = yield* prepareWorkspace(target, cache);
-	const surface = yield* analyze(workspace);
+	const analyzed = yield* analyze(workspace);
+	const manifest = yield* manifestPath(workspace);
+	const surface = manifest === undefined ? analyzed : { ...analyzed, elements: yield* readElements(workspace, manifest) };
 	const found = yield* scan(workspace);
 	const files = yield* targetFiles(out, target.package);
 	const readme = yield* fs.readFileString(path.join(workspace.packageDirectory, "README.md")).pipe(Effect.orElseSucceed(() => ""));
@@ -55,10 +58,10 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 });
 
 /** Drafts the recipe into `recipe.json`, keeping every decision an agent or a person made in the one already there. */
-export const draft = Effect.fn("draft")(function* (surface: Surface, found: Scan, readme: string, files: TargetFiles) {
+export const draft = Effect.fn("draft")(function* (surface: Surface, found: Scan, readme: string, files: TargetFiles, frontend = false) {
 	const fs = yield* FileSystem.FileSystem;
 	const previous = (yield* fs.exists(files.recipe)) ? yield* readRecipe(files) : undefined;
-	const recipe = yield* draftRecipe(surface, found, readme, previous);
+	const recipe = yield* draftRecipe(surface, found, readme, previous, frontend);
 	yield* fs.writeFileString(files.recipe, json(recipe));
 	return recipe;
 });
@@ -95,10 +98,17 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 	for (let round = 1; round <= MAX_ROUNDS; round++) {
 		const check = yield* typeCheck(files);
 		if (check.exitCode === 0) return { rounds: round, overrides: decided, derived: kept };
-		const source = yield* fs.readFileString(path.join(files.package, "src", "index.ts"));
-		const derived = explicitFailures(check.output, source).filter((method) => !kept.includes(method));
+		const sources = new Map<string, string>();
+		for (const [, file] of check.output.matchAll(/^([\w./-]+\.ts)\(\d+,\d+\): error/gm)) {
+			if (file !== undefined && !sources.has(file)) sources.set(file, yield* fs.readFileString(path.join(files.package, file)).pipe(Effect.orElseSucceed(() => "")));
+		}
+		const rejected = rejectedMarkers(check.output, (file) => sources.get(file) ?? "");
+		// A generic signature or an element's type that names what upstream does not declare falls back to derived
+		// (untyped) types; a property upstream's element type does not have is left out.
+		const derived = rejected.filter((item) => item.marker !== "property" && !kept.includes(item.key)).map((item) => item.key);
+		const excluded = rejected.filter((item) => item.marker === "property").map((item) => [item.key, "exclude" as MethodOverride] as const);
 		// An override already tried once means the spec and the types disagree in a way overrides cannot settle.
-		const found = Object.entries(overridesFrom(check.output)).filter(([key]) => decided[key] === undefined);
+		const found = [...Object.entries(overridesFrom(check.output)), ...excluded].filter(([key]) => decided[key] === undefined);
 		if (found.length === 0 && derived.length === 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
 		const recipe = yield* readRecipe(files);
 		for (const [key, value] of found) decided[key] = value;
@@ -131,7 +141,8 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	const path = yield* Path.Path;
 	const recipe = yield* readRecipe(files);
 	const name = recipe.name.replace(/^@effectified\//, "");
-	const tag = `${name}-v${recipe.version}`;
+	const version = facadeVersion(recipe);
+	const tag = `${name}-v${version}`;
 	const git = (args: ReadonlyArray<string>) => runCommand("git", args, root);
 	if ((yield* git(["status", "--porcelain"])).output.trim() !== "") return yield* new StepError({ step: "release", reason: "the tree has uncommitted changes" });
 	const head = (yield* git(["rev-parse", "HEAD"])).output.trim();
@@ -148,13 +159,16 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	const packed = yield* fs.makeTempDirectoryScoped();
 	const pack = yield* runCommand("npm", ["pack", "--ignore-scripts", "--pack-destination", packed], files.package);
 	if (pack.exitCode !== 0) return yield* new StepError({ step: "npm pack", reason: tail(pack.output) });
-	const tarball = path.join(packed, `effectified-${name}-${recipe.version}.tgz`);
+	// The tarball is named as its URL says, whatever npm made of a `+revision` in the file it wrote.
+	const written = (yield* fs.readDirectory(packed)).find((file) => file.endsWith(".tgz")) ?? "";
+	const tarball = path.join(packed, `effectified-${name}-${version}.tgz`);
+	if (written !== path.basename(tarball)) yield* fs.rename(path.join(packed, written), tarball);
 	const url = releaseUrl(recipe);
 	const notes = path.join(packed, "NOTES.md");
 	yield* fs.writeFileString(
 		notes,
 		[
-			`${recipe.name} ${recipe.version}: ${recipe.package}@${recipe.version} in Effect, generated by the effectified engine at ${head}.`,
+			`${recipe.name} ${version}: ${recipe.package}@${recipe.version} in Effect, generated by the effectified engine at ${head}.`,
 			"",
 			"```sh",
 			`npm install --allow-remote=root ${url} effect`,
@@ -168,7 +182,7 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	);
 	const created = yield* runCommand(
 		"gh",
-		["release", "create", tag, "--repo", "effectified/engine", "--target", head, "--prerelease", "--title", `${recipe.name} ${recipe.version}`, "--notes-file", notes, tarball],
+		["release", "create", tag, "--repo", "effectified/engine", "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, tarball],
 		root,
 	);
 	if (created.exitCode !== 0) return yield* new StepError({ step: "gh release", reason: tail(created.output) });
@@ -213,15 +227,28 @@ export const listTargets = Effect.fn("listTargets")(function* (out: string) {
 	return names.sort();
 });
 
+/** What the compiler rejected on a line the generator marked: `// explicit: X`, `// property: X`, `// element: X`. */
+export interface Rejected {
+	readonly marker: "explicit" | "property" | "element";
+	readonly key: string;
+}
+
+/** The marked lines tsc rejects, reading each erroring file of the package with `read`. */
+export function rejectedMarkers(diagnostics: string, read: (file: string) => string): ReadonlyArray<Rejected> {
+	const found = new Map<string, Rejected>();
+	for (const [, file, line] of diagnostics.matchAll(/^([\w./-]+\.ts)\((\d+),\d+\): error/gm)) {
+		if (file === undefined) continue;
+		const marked = /\/\/ (explicit|property|element): (\S+)$/.exec(read(file).split("\n")[Number(line) - 1] ?? "");
+		if (marked !== null) found.set(`${marked[1]}:${marked[2]}`, { marker: marked[1] as Rejected["marker"], key: marked[2] ?? "" });
+	}
+	return [...found.values()];
+}
+
 /** The generic methods whose explicit signature (a line marked `// explicit: <Handle>.<method>`) tsc rejects. */
 export function explicitFailures(diagnostics: string, source: string): ReadonlyArray<string> {
-	const lines = source.split("\n");
-	const failed = new Set<string>();
-	for (const [, line] of diagnostics.matchAll(/src\/index\.ts\((\d+),\d+\): error/g)) {
-		const marker = /\/\/ explicit: (\S+)$/.exec(lines[Number(line) - 1] ?? "")?.[1];
-		if (marker !== undefined) failed.add(marker);
-	}
-	return [...failed];
+	return rejectedMarkers(diagnostics, () => source)
+		.filter((rejected) => rejected.marker === "explicit")
+		.map((rejected) => rejected.key);
 }
 
 /** The method overrides tsc's diagnostics of a generated `index.ts` call for, by `<Handle>.<method>`. */
@@ -250,7 +277,8 @@ export function overridesFrom(diagnostics: string): Record<string, MethodOverrid
 }
 
 const install = Effect.fn("install")(function* (files: TargetFiles) {
-	const result = yield* runCommand("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], files.package);
+	// --allow-remote=all: frontend facades take Effect UI's snapshot build and the puppeteer facade from URLs.
+	const result = yield* runCommand("npm", ["install", "--ignore-scripts", "--allow-remote=all", "--no-audit", "--no-fund", "--loglevel=error"], files.package);
 	if (result.exitCode !== 0) return yield* new StepError({ step: "npm install", reason: tail(result.output) });
 });
 

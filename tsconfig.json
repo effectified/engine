@@ -3,8 +3,14 @@
     "target": "es2024",
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "lib": ["es2024", "esnext.disposable"],
-    "types": ["node"],
+    "lib": [
+      "es2024",
+      "esnext.disposable",
+      "dom"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noUncheckedIndexedAccess": true,
@@ -18,5 +24,8 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src", "test"]
+  "include": [
+    "src",
+    "test"
+  ]
 }

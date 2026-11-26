@@ -69,20 +69,44 @@ export const Recipe = Schema.Struct({
 	 * explicit signature the generator writes for them does not compile (it names a type upstream does not export).
 	 */
 	derived: Schema.Array(Schema.String),
+	/**
+	 * A frontend facade for Effect UI: the snapshot of @effect/ui it builds against (a commit of Effect-TS/ui on
+	 * pkg.pr.new), and the mounts it offers, each a module `src/mounts/<name>.ts` written by an agent or a person.
+	 */
+	ui: Schema.optional(Schema.Struct({ effectUi: Schema.String, mounts: Schema.Array(Schema.String) })),
+	/**
+	 * The facade's revision for this upstream version, from 1. A facade's version is its upstream's; a fixed facade
+	 * of the same upstream is released as `<version>+<revision>`, since a release is never replaced.
+	 */
+	revision: Schema.optional(Schema.Number),
 	/** Packages the facade's own tests need (a Redis client, say), added to its devDependencies by exact version. */
 	testDependencies: Schema.Record(Schema.String, Schema.String),
 	decisions: Schema.Array(Decision),
 });
 export type Recipe = typeof Recipe.Type;
 
+/** The facade's version: upstream's, with `+<revision>` from the second revision on. */
+export function facadeVersion(recipe: Recipe): string {
+	return recipe.revision === undefined || recipe.revision <= 1 ? recipe.version : `${recipe.version}+${recipe.revision}`;
+}
+
 /** Reads a stored recipe; files are a trust boundary. */
 export const decodeRecipe = Schema.decodeUnknownEffect(Schema.fromJsonString(Recipe));
+
+/** The Effect UI snapshot frontend facades build against: a commit of Effect-TS/ui, published on pkg.pr.new. */
+export const EFFECT_UI = "2fd1a57";
 
 /** Release methods in the order the draft prefers them. */
 const RELEASE_PREFERENCE = ["close", "quit", "disconnect", "destroy", "shutdown", "terminate", "stop", "end", "dispose", "release"];
 
 /** Drafts a recipe from a surface, the scan and the package README; keeps the decisions of `previous` not made by the engine. */
-export const draftRecipe = Effect.fn("draftRecipe")(function* (surface: Surface, scan: Scan, readme: string, previous?: Recipe) {
+export const draftRecipe = Effect.fn("draftRecipe")(function* (
+	surface: Surface,
+	scan: Scan,
+	readme: string,
+	previous: Recipe | undefined,
+	frontend: boolean,
+) {
 	const decisions: Array<Decision> = [];
 	const kept = new Map((previous?.decisions ?? []).filter((decision) => decision.by !== "engine").map((decision) => [decision.id, decision]));
 	const decide = (id: string, question: string, answer: string, why: string): string => {
@@ -92,6 +116,8 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (surface: Surface,
 	};
 
 	const prefix = pascal(surface.package.replace(/^@[^/]+\//, "").replace(/-(core|js|node)$/, ""));
+	// A web-component library, or one already made a frontend facade, is one for Effect UI.
+	const ui = previous?.ui ?? (surface.elements !== undefined || frontend ? { effectUi: EFFECT_UI, mounts: [] } : undefined);
 	const offered = offeredExports(surface, readme);
 	const exports = decide(
 		"exports",
@@ -160,6 +186,9 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (surface: Surface,
 		methods: previous?.methods ?? {},
 		derived: previous?.derived ?? [],
 		testDependencies: previous?.testDependencies ?? {},
+		// A new upstream version starts again at revision 1.
+		...(previous?.revision !== undefined && previous.version === surface.version ? { revision: previous.revision } : {}),
+		...(ui === undefined ? {} : { ui }),
 		decisions,
 	} satisfies Recipe;
 });
@@ -197,6 +226,8 @@ function reachableHandles(surface: Surface, exports: ReadonlyArray<string>): Rea
 		for (const signatures of Object.values(handle.methods)) {
 			for (const signature of signatures) if (signature.handle !== undefined) queue.push(signature.handle);
 		}
+		// A handle a property holds is reachable too: puppeteer's `page.keyboard` and `page.mouse`.
+		for (const property of Object.values(handle.properties)) if (property.handle !== undefined) queue.push(property.handle);
 	}
 	return [...seen];
 }

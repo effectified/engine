@@ -3,6 +3,7 @@
 // difference between two of them. It is stored as JSON, so it is a Schema.
 
 import { Schema } from "effect";
+import { Element } from "./elements.ts";
 
 /** What a signature does, as far as the types tell. */
 export const Trait = Schema.Literals([
@@ -74,6 +75,8 @@ export const Surface = Schema.Struct({
 	exports: Schema.Array(Export),
 	handles: Schema.Record(Schema.String, Handle),
 	typeExports: Schema.Array(Schema.String),
+	/** For a web-component library: the elements its Custom Elements Manifest declares. */
+	elements: Schema.optional(Schema.Array(Element)),
 });
 export type Surface = typeof Surface.Type;
 

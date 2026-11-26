@@ -42,7 +42,7 @@ export const resolveTarget = Effect.fn("resolveTarget")(function* (input: string
 	const version = parsed.kind === "npm" ? parsed.version : "latest";
 	const manifest = yield* registry(input, `${name}/${version}`);
 	const resolved = String(manifest["version"]);
-	const types = hasTypes(manifest) ? { from: "bundled" as const, package: name, version: resolved } : yield* typesPackage(input, name);
+	const types = hasTypes(manifest) ? { from: "bundled" as const, package: name, version: resolved } : yield* typesPackage(input, name, resolved);
 	return { package: name, version: resolved, repository: repositoryUrl(manifest), types } satisfies Target;
 });
 
@@ -68,12 +68,13 @@ const packageOfRepository = Effect.fn("packageOfRepository")(function* (
 });
 
 /** The DefinitelyTyped package of `name`, when the package ships no types of its own. */
-const typesPackage = Effect.fn("typesPackage")(function* (input: string, name: string) {
+const typesPackage = Effect.fn("typesPackage")(function* (input: string, name: string, version: string) {
 	const typesName = `@types/${name.startsWith("@") ? name.slice(1).replace("/", "__") : name}`;
-	const manifest = yield* registry(input, `${typesName}/latest`).pipe(
-		Effect.mapError(() => new TargetError({ input, reason: `${name} ships no types and ${typesName} does not exist` })),
-	);
-	return { from: "definitely-typed" as const, package: typesName, version: String(manifest["version"]) };
+	const manifest = yield* registry(input, `${typesName}/latest`).pipe(Effect.option);
+	// No DefinitelyTyped package: the package's own `.d.ts` files beside its JavaScript (as @material/web ships them,
+	// with no `types` field) are found by TypeScript itself.
+	if (manifest._tag === "None") return { from: "bundled" as const, package: name, version };
+	return { from: "definitely-typed" as const, package: typesName, version: String(manifest.value["version"]) };
 });
 
 function hasTypes(manifest: Record<string, unknown>): boolean {
