@@ -54,7 +54,7 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 | [nodemailer](https://nodemailer.com) | 40M | factory → scoped transport, error codes (`EAUTH`, `ECONNECTION`) | `@effectified/nodemailer` | 3, JSON transport and a refused SMTP port |
 | [simple-git](https://github.com/steveukx/git-js) | 15M | 70 chainable thenable methods, generics kept (`log<T = DefaultLogFields>`), error hierarchy from types | `@effectified/simple-git` | 2, git in a temp repository |
 | [sharp](https://sharp.pixelplumbing.com) | 169M | a builder that is also a Node stream, native code | `@effectified/sharp` | 2, images in memory |
-| [puppeteer-core](https://pptr.dev) | 16M | 16 handles, scoped browser and pages, error hierarchy (`TimeoutError`), 39 generic methods kept | `@effectified/puppeteer-core` | 3, a local Chrome |
+| [puppeteer-core](https://pptr.dev) | 35M | 16 handles, scoped browser and pages, error hierarchy (`TimeoutError`), 39 generic methods kept | `@effectified/puppeteer-core` | 3, a local Chrome |
 | [bullmq](https://bullmq.io) | 14M | classes with generic overloaded constructors, events as Streams, four services | `@effectified/bullmq` | 2, Redis |
 
 ## For agents
