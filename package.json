@@ -1,0 +1,30 @@
+{
+  "name": "@effectified/engine",
+  "version": "0.1.0",
+  "description": "The effectified engine: analyzes a library's types and source, drafts a recipe, generates an Effect-native facade, and keeps it in step with upstream",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "pnpm@12.21.0",
+  "bin": {
+    "effectify": "./bin/effectify.js"
+  },
+  "scripts": {
+    "effectify": "node src/bin.ts",
+    "check": "tsc -p tsconfig.json",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "@ast-grep/napi": "0.51.3",
+    "@effect/platform-node": "4.1.5",
+    "effect": "4.1.5",
+    "typescript": "7.0.2"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.1.5",
+    "@types/node": "26.6.7",
+    "vitest": "5.1.1"
+  }
+}

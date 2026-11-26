@@ -1,0 +1,220 @@
+// The engine's steps over one target directory (`<out>/<package>/`): study (surface and scan), draft (the recipe),
+// build (the facade package) and verify (install and type check it). Each step reads what the one before wrote, so a
+// person or an agent can stop after any of them, edit, and go on.
+
+import { Effect, FileSystem, Path, Schema } from "effect";
+import { analyze } from "./analyze.ts";
+import { type Drift, drift, driftMarkdown } from "./drift.ts";
+import { runCommand } from "./command.ts";
+import { generate, writeFiles } from "./generate.ts";
+import { decodeRecipe, draftRecipe, type MethodOverride, type Recipe } from "./recipe.ts";
+import { type Scan, scan } from "./scan.ts";
+import { decodeSurface, type Surface } from "./surface.ts";
+import { resolveTarget } from "./target.ts";
+import { prepareWorkspace } from "./workspace.ts";
+
+/** A target's directory and the files the steps keep in it. */
+export interface TargetFiles {
+	readonly directory: string;
+	readonly surface: string;
+	readonly scan: string;
+	readonly recipe: string;
+	readonly package: string;
+}
+
+/** A step failed in a way the steps themselves report: the package does not type check, or a file is missing. */
+export class StepError extends Schema.TaggedError<StepError>()("StepError", { step: Schema.String, reason: Schema.String }) {}
+
+/** Where a package's files are under `out`. */
+export const targetFiles = Effect.fn("targetFiles")(function* (out: string, packageName: string) {
+	const path = yield* Path.Path;
+	const directory = path.resolve(out, packageName.replace(/^@/, "").replace("/", "__"));
+	return {
+		directory,
+		surface: path.join(directory, "surface.json"),
+		scan: path.join(directory, "scan.json"),
+		recipe: path.join(directory, "recipe.json"),
+		package: path.join(directory, "package"),
+	} satisfies TargetFiles;
+});
+
+/** Resolves and installs a target, reads its surface and scans its source; writes `surface.json` and `scan.json`. */
+export const study = Effect.fn("study")(function* (input: string, cache: string, out: string) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const target = yield* resolveTarget(input);
+	const workspace = yield* prepareWorkspace(target, cache);
+	const surface = yield* analyze(workspace);
+	const found = yield* scan(workspace);
+	const files = yield* targetFiles(out, target.package);
+	const readme = yield* fs.readFileString(path.join(workspace.packageDirectory, "README.md")).pipe(Effect.orElseSucceed(() => ""));
+	yield* fs.makeDirectory(files.directory, { recursive: true });
+	yield* fs.writeFileString(files.surface, json(surface));
+	yield* fs.writeFileString(files.scan, json(found));
+	return { surface, scan: found, readme, files, workspace };
+});
+
+/** Drafts the recipe into `recipe.json`, keeping every decision an agent or a person made in the one already there. */
+export const draft = Effect.fn("draft")(function* (surface: Surface, found: Scan, readme: string, files: TargetFiles) {
+	const fs = yield* FileSystem.FileSystem;
+	const previous = (yield* fs.exists(files.recipe)) ? yield* readRecipe(files) : undefined;
+	const recipe = yield* draftRecipe(surface, found, readme, previous);
+	yield* fs.writeFileString(files.recipe, json(recipe));
+	return recipe;
+});
+
+/** Generates the facade package into `package/` from `surface.json` and `recipe.json`. */
+export const build = Effect.fn("build")(function* (files: TargetFiles) {
+	const fs = yield* FileSystem.FileSystem;
+	const surface = yield* fs.readFileString(files.surface).pipe(Effect.flatMap(decodeSurface));
+	const recipe = yield* readRecipe(files);
+	const generated = yield* generate(surface, recipe);
+	yield* writeFiles(generated, files.package);
+	return { surface, recipe, files: generated };
+});
+
+/** Installs the generated package's dependencies (scripts off) and type checks it with TypeScript 7. */
+export const verify = Effect.fn("verify")(function* (files: TargetFiles) {
+	yield* install(files);
+	const check = yield* typeCheck(files);
+	if (check.exitCode !== 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
+});
+
+/**
+ * Generates, type checks, and turns what the compiler says about a spec into the recipe's method overrides, until
+ * the package compiles. The analyzer and upstream's types can read a method differently (a generic whose result
+ * collapses to `any`, say); the facade's types are the compiler's, so the runtime must follow them.
+ */
+export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	yield* build(files);
+	yield* install(files);
+	const decided: Record<string, MethodOverride> = {};
+	const kept: Array<string> = [];
+	for (let round = 1; round <= MAX_ROUNDS; round++) {
+		const check = yield* typeCheck(files);
+		if (check.exitCode === 0) return { rounds: round, overrides: decided, derived: kept };
+		const source = yield* fs.readFileString(path.join(files.package, "src", "index.ts"));
+		const derived = explicitFailures(check.output, source).filter((method) => !kept.includes(method));
+		// An override already tried once means the spec and the types disagree in a way overrides cannot settle.
+		const found = Object.entries(overridesFrom(check.output)).filter(([key]) => decided[key] === undefined);
+		if (found.length === 0 && derived.length === 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
+		const recipe = yield* readRecipe(files);
+		for (const [key, value] of found) decided[key] = value;
+		kept.push(...derived);
+		yield* fs.writeFileString(
+			files.recipe,
+			json({ ...recipe, methods: { ...recipe.methods, ...Object.fromEntries(found) }, derived: [...new Set([...recipe.derived, ...derived])].sort() }),
+		);
+		yield* build(files);
+	}
+	return yield* new StepError({ step: "reconcile", reason: `the package did not compile after ${MAX_ROUNDS} rounds` });
+});
+
+/** How often `reconcile` regenerates; tsc names at most a few missing properties per error, so it may take several. */
+const MAX_ROUNDS = 12;
+
+/** Runs the facade package's own tests (`test/*.test.ts`, written by agents or people; the generator keeps them). */
+export const test = Effect.fn("test")(function* (files: TargetFiles) {
+	const result = yield* runCommand("node", ["node_modules/vitest/vitest.mjs", "--run", "--passWithNoTests"], files.package);
+	if (result.exitCode !== 0) return yield* new StepError({ step: "test", reason: tail(result.output) });
+	return { output: tail(result.output) };
+});
+
+/** What `sync` did with one target. */
+export type Synced =
+	| { readonly kind: "current"; readonly package: string; readonly version: string }
+	| { readonly kind: "updated"; readonly package: string; readonly from: string; readonly to: string; readonly drift: Drift };
+
+/**
+ * Brings a target to upstream's latest version: studies it, writes the drift (`DRIFT.md`), redrafts the recipe
+ * (keeping what agents and people decided), reconciles, and runs the facade's tests. A failing step fails the sync,
+ * with the drift already written for whoever picks it up.
+ */
+export const sync = Effect.fn("sync")(function* (packageName: string, cache: string, out: string) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const files = yield* targetFiles(out, packageName);
+	const before = yield* fs.readFileString(files.surface).pipe(Effect.flatMap(decodeSurface));
+	const latest = yield* resolveTarget(packageName);
+	if (latest.version === before.version) return { kind: "current", package: packageName, version: before.version } satisfies Synced;
+	const studied = yield* study(`${packageName}@${latest.version}`, cache, out);
+	const changes = drift(before, studied.surface);
+	yield* fs.writeFileString(path.join(files.directory, "DRIFT.md"), driftMarkdown(changes));
+	yield* draft(studied.surface, studied.scan, studied.readme, files);
+	yield* reconcile(files);
+	yield* test(files);
+	return { kind: "updated", package: packageName, from: before.version, to: latest.version, drift: changes } satisfies Synced;
+});
+
+/** The npm names of every target under `out` (each directory with a `recipe.json`). */
+export const listTargets = Effect.fn("listTargets")(function* (out: string) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const names: Array<string> = [];
+	for (const entry of yield* fs.readDirectory(out)) {
+		const recipe = path.join(out, entry, "recipe.json");
+		if (yield* fs.exists(recipe)) names.push((yield* readRecipe({ ...(yield* targetFiles(out, entry)), recipe })).package);
+	}
+	return names.sort();
+});
+
+/** The generic methods whose explicit signature (a line marked `// explicit: <Handle>.<method>`) tsc rejects. */
+export function explicitFailures(diagnostics: string, source: string): ReadonlyArray<string> {
+	const lines = source.split("\n");
+	const failed = new Set<string>();
+	for (const [, line] of diagnostics.matchAll(/src\/index\.ts\((\d+),\d+\): error/g)) {
+		const marker = /\/\/ explicit: (\S+)$/.exec(lines[Number(line) - 1] ?? "")?.[1];
+		if (marker !== undefined) failed.add(marker);
+	}
+	return [...failed];
+}
+
+/** The method overrides tsc's diagnostics of a generated `index.ts` call for, by `<Handle>.<method>`. */
+export function overridesFrom(diagnostics: string): Record<string, MethodOverride> {
+	const overrides: Record<string, MethodOverride> = {};
+	// `StreamSpec` also names the handles: `StreamSpec<Pick<Page, PageMethods>, Handles>`.
+	const spec = String.raw`'(Async|Stream)Spec<Pick<.*?(\w+)Methods>(?:, Handles)?>'`;
+	// Listed in a spec, but upstream's types do not read the method so: it is something else.
+	for (const [, method, , handle] of diagnostics.matchAll(new RegExp(String.raw`'"([^"]+)"' does not exist in type ${spec}`, "g"))) {
+		overrides[`${handle}.${method}`] = "sync";
+	}
+	// Missing from a spec that upstream's types require.
+	for (const [, method, kind, handle] of diagnostics.matchAll(new RegExp(String.raw`Property '([^']+)' is missing in type '.*?' but required in type ${spec}`, "g"))) {
+		overrides[`${handle}.${method}`] = kind === "Async" ? "async" : "stream";
+	}
+	for (const [, kind, handle, list] of diagnostics.matchAll(new RegExp(String.raw`missing the following properties from type ${spec}: ([^.\n]+)`, "g"))) {
+		for (const method of (list ?? "").split(/, | and /).filter((name) => /^[\w$]+$/.test(name))) {
+			overrides[`${handle}.${method}`] = kind === "Async" ? "async" : "stream";
+		}
+	}
+	// Listed as a method but not one of upstream's public methods.
+	for (const [, handle, method] of diagnostics.matchAll(/Type '(\w+)Methods' does not satisfy the constraint '[^']*'\.\s+Type '"([^"]+)"' is not assignable/g)) {
+		overrides[`${handle}.${method}`] = "exclude";
+	}
+	return overrides;
+}
+
+const install = Effect.fn("install")(function* (files: TargetFiles) {
+	const result = yield* runCommand("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--loglevel=error"], files.package);
+	if (result.exitCode !== 0) return yield* new StepError({ step: "npm install", reason: tail(result.output) });
+});
+
+const typeCheck = (files: TargetFiles) =>
+	runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--pretty", "false"], files.package);
+
+/** The last lines of a tool's output, enough to say what failed. */
+function tail(output: string): string {
+	return output.trim().split("\n").slice(-40).join("\n");
+}
+
+const readRecipe = Effect.fn("readRecipe")(function* (files: TargetFiles) {
+	const fs = yield* FileSystem.FileSystem;
+	const recipe: Recipe = yield* fs.readFileString(files.recipe).pipe(Effect.flatMap(decodeRecipe));
+	return recipe;
+});
+
+function json(value: unknown): string {
+	return `${JSON.stringify(value, null, "\t")}\n`;
+}
