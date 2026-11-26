@@ -4,10 +4,14 @@
 // app in Chrome: a generated harness serves fixtures with Vite and drives them through @effectified/puppeteer-core.
 
 import type { Element } from "./elements.ts";
-import { facadeVersion, type Recipe } from "./recipe.ts";
+import { facadeVersion, type Recipe, releaseUrl } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
 
-/** Pinned versions a frontend facade builds and tests with. */
+/**
+ * Pinned versions a frontend facade builds and tests with. The browser harness drives Chrome through a released
+ * puppeteer-core facade; the release it names stays in place when facades move, so its URL is changed only for a
+ * newer facade.
+ */
 const UI_TOOLCHAIN = {
 	effect: "4.1.5",
 	typescript: "7.0.2",
@@ -315,9 +319,7 @@ const TSCONFIG_BUILD = `${JSON.stringify(
 )}\n`;
 
 function readme(surface: Surface, recipe: Recipe, elements: ReadonlyArray<Element>): string {
-	const name = recipe.name.replace(/^@effectified\//, "");
-	const version = facadeVersion(recipe);
-	const url = `https://github.com/effectified/engine/releases/download/${name}-v${version}/effectified-${name}-${version}.tgz`;
+	const url = releaseUrl(recipe);
 	const first = elements[0];
 	return [
 		`# ${recipe.name}`,

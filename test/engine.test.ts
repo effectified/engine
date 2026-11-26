@@ -1,5 +1,6 @@
 // The engine's pure parts: reading targets, reading what tsc says about a generated facade, drift, and plans; and
-// the generator's determinism, against every target committed under targets/.
+// the generator's output, against fixtures taken from facades in effectified/packages (test/fixtures: a surface, a
+// recipe and the src/index.ts they generate). `pnpm test -u` rewrites the expected output after an intended change.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -95,15 +96,15 @@ describe("drift", () => {
 	});
 });
 
-const targets = join(import.meta.dirname, "..", "targets");
-const committed = readdirSync(targets).filter((name) => !name.startsWith("."));
+const fixtures = join(import.meta.dirname, "fixtures");
+const committed = readdirSync(fixtures).filter((name) => !name.startsWith("."));
 const readJson = <S extends Schema.Top>(schema: S, file: string) =>
 	Schema.decodeUnknownSync(Schema.fromJsonString(schema) as unknown as Schema.Codec<S["Type"], string>)(readFileSync(file, "utf8"));
 
 describe("plan", () => {
 	it("plans a frontend facade's elements in groups, each a browser test of its own", () => {
 		const name = "awesome.me__webawesome";
-		const result = plan(readJson(Surface, join(targets, name, "surface.json")), readJson(Recipe, join(targets, name, "recipe.json")), `targets/${name}`);
+		const result = plan(readJson(Surface, join(fixtures, name, "surface.json")), readJson(Recipe, join(fixtures, name, "recipe.json")), `targets/${name}`);
 		const groups = result.units.filter((unit) => unit.id.startsWith("test-elements"));
 		expect(groups.length).toBe(7);
 		expect(groups[0]?.touches[0]).toBe("targets/awesome.me__webawesome/package/test/elements-1.test.ts");
@@ -111,7 +112,7 @@ describe("plan", () => {
 
 	it("plans a recipe review, test units per handle, and docs that wait for the tests", () => {
 		const name = "nodemailer";
-		const result = plan(readJson(Surface, join(targets, name, "surface.json")), readJson(Recipe, join(targets, name, "recipe.json")), `targets/${name}`);
+		const result = plan(readJson(Surface, join(fixtures, name, "surface.json")), readJson(Recipe, join(fixtures, name, "recipe.json")), `targets/${name}`);
 		expect(result.units[0]?.id).toBe("recipe");
 		expect(result.units.at(-1)?.id).toBe("docs");
 		const tests = result.units.filter((unit) => unit.id.startsWith("test-"));
@@ -123,13 +124,13 @@ describe("plan", () => {
 
 describe("generate", () => {
 	for (const name of committed) {
-		it.effect(`writes targets/${name}/package/src/index.ts again from its surface and recipe`, () =>
+		it.effect(`writes ${name}'s src/index.ts from its surface and recipe`, () =>
 			Effect.gen(function* () {
 				const files = yield* generate(
-					readJson(Surface, join(targets, name, "surface.json")),
-					readJson(Recipe, join(targets, name, "recipe.json")),
+					readJson(Surface, join(fixtures, name, "surface.json")),
+					readJson(Recipe, join(fixtures, name, "recipe.json")),
 				);
-				expect(files.get("src/index.ts")).toBe(readFileSync(join(targets, name, "package", "src", "index.ts"), "utf8"));
+				yield* Effect.promise(() => expect(files.get("src/index.ts")).toMatchFileSnapshot(join(fixtures, name, "index.ts.golden")));
 			}).pipe(Effect.provide(NodeServices.layer)),
 		);
 	}

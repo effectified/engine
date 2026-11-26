@@ -4,6 +4,10 @@
   "description": "The effectified engine: analyzes a library's types and source, drafts a recipe, generates an Effect-native facade, and keeps it in step with upstream",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/effectified/engine.git"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -11,8 +15,15 @@
   "bin": {
     "effectify": "./bin/effectify.js"
   },
+  "files": [
+    "bin",
+    "dist",
+    "src/runtime",
+    "README.md"
+  ],
   "scripts": {
     "effectify": "node src/bin.ts",
+    "build": "tsc -p tsconfig.build.json",
     "check": "tsc -p tsconfig.json",
     "test": "vitest --run"
   },

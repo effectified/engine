@@ -109,6 +109,20 @@ export function facadeVersion(recipe: Recipe): string {
 	return recipe.revision === undefined || recipe.revision <= 1 ? recipe.version : `${recipe.version}+${recipe.revision}`;
 }
 
+/** The repository facades live in and are released from: the engine makes them, the community keeps them there. */
+export const PACKAGES_REPOSITORY = "effectified/packages";
+
+/** The facade's release tag, `<name>-v<version>`. */
+export function releaseTag(recipe: Recipe): string {
+	return `${recipe.name.replace(/^@effectified\//, "")}-v${facadeVersion(recipe)}`;
+}
+
+/** Where `effectify release` publishes a facade: the tarball of its release on PACKAGES_REPOSITORY. */
+export function releaseUrl(recipe: Recipe): string {
+	const name = recipe.name.replace(/^@effectified\//, "");
+	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${name}-${facadeVersion(recipe)}.tgz`;
+}
+
 /** Reads a stored recipe; files are a trust boundary. */
 export const decodeRecipe = Schema.decodeUnknownEffect(Schema.fromJsonString(Recipe));
 

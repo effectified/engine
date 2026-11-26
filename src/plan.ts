@@ -35,7 +35,7 @@ const METHODS_PER_UNIT = 30;
 export function plan(surface: Surface, recipe: Recipe, directory: string): Plan {
 	const target = `${recipe.package}@${recipe.version}`;
 	const pkg = `${directory}/package`;
-	const check = [`node src/bin.ts reconcile ${recipe.package}`, `node src/bin.ts test ${recipe.package}`];
+	const check = [`pnpm effectify reconcile ${recipe.package}`, `pnpm effectify test ${recipe.package}`];
 	const toReview = recipe.decisions.filter((decision) => decision.by === "engine");
 	const units: Array<WorkUnit> = [
 		{
@@ -136,7 +136,7 @@ export function plan(surface: Surface, recipe: Recipe, directory: string): Plan 
 		].join(" "),
 		touches: [`${directory}/USAGE.md`],
 		dependsOn: units.filter((unit) => unit.id.startsWith("test-")).map((unit) => unit.id),
-		acceptance: [`node src/bin.ts test ${recipe.package}`],
+		acceptance: [`pnpm effectify test ${recipe.package}`],
 	});
 	return { target, facade: recipe.name, units };
 }

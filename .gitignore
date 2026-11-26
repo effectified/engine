@@ -4,6 +4,3 @@ out/
 dist/
 *.tsbuildinfo
 .DS_Store
-targets/*/package/node_modules/
-targets/*/package/package-lock.json
-targets/*/package/dist/

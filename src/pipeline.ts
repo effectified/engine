@@ -8,8 +8,8 @@ import { manifestPath, readElements } from "./elements.ts";
 import { typedElements } from "./element-types.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
 import { runCommand } from "./command.ts";
-import { generate, releaseUrl, writeFiles } from "./generate.ts";
-import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, type Recipe } from "./recipe.ts";
+import { generate, writeFiles } from "./generate.ts";
+import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, PACKAGES_REPOSITORY, type Recipe, releaseTag, releaseUrl } from "./recipe.ts";
 import { type Scan, scan } from "./scan.ts";
 import { decodeSurface, type Surface } from "./surface.ts";
 import { resolveTarget } from "./target.ts";
@@ -157,24 +157,23 @@ export const test = Effect.fn("test")(function* (files: TargetFiles) {
 	return { output: tail(result.output) };
 });
 
-/**
- * Releases a facade on GitHub: builds it with TypeScript 7, packs it, and attaches the tarball to the release
- * `<name>-v<version>` of effectified/engine, made from a clean, pushed HEAD and never replaced.
- */
-/** Whether the facade's current version (`<name>-v<version>`) is released on effectified/engine. */
+/** Whether the facade's current version (`<name>-v<version>`) is released on PACKAGES_REPOSITORY. */
 export const isReleased = Effect.fn("isReleased")(function* (files: TargetFiles, root: string) {
 	const recipe = yield* readRecipe(files);
-	const tag = `${recipe.name.replace(/^@effectified\//, "")}-v${facadeVersion(recipe)}`;
-	return (yield* runCommand("gh", ["release", "view", tag, "--repo", "effectified/engine"], root)).exitCode === 0;
+	return (yield* runCommand("gh", ["release", "view", releaseTag(recipe), "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0;
 });
 
+/**
+ * Releases a facade on GitHub: builds it with TypeScript 7, packs it, and attaches the tarball to the release
+ * `<name>-v<version>` of PACKAGES_REPOSITORY, made from a clean, pushed HEAD of that repository and never replaced.
+ */
 export const release = Effect.fn("release")(function* (files: TargetFiles, root: string) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	const recipe = yield* readRecipe(files);
 	const name = recipe.name.replace(/^@effectified\//, "");
 	const version = facadeVersion(recipe);
-	const tag = `${name}-v${version}`;
+	const tag = releaseTag(recipe);
 	const git = (args: ReadonlyArray<string>) => runCommand("git", args, root);
 	if ((yield* git(["status", "--porcelain"])).output.trim() !== "") return yield* new StepError({ step: "release", reason: "the tree has uncommitted changes" });
 	const head = (yield* git(["rev-parse", "HEAD"])).output.trim();
@@ -182,7 +181,7 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	if (!(yield* git(["branch", "--remotes", "--contains", head])).output.includes("origin/")) {
 		return yield* new StepError({ step: "release", reason: `HEAD ${head} is not pushed` });
 	}
-	if ((yield* runCommand("gh", ["release", "view", tag, "--repo", "effectified/engine"], root)).exitCode === 0) {
+	if ((yield* runCommand("gh", ["release", "view", tag, "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0) {
 		return yield* new StepError({ step: "release", reason: `${tag} is released already; a release is never replaced` });
 	}
 	yield* install(files);
@@ -208,13 +207,13 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 			`bun add ${url} effect`,
 			"```",
 			"",
-			`Recipe, surface and tests: https://github.com/effectified/engine/tree/${head}/targets/${files.directory.split("/").at(-1)}`,
+			`Recipe, surface and tests: https://github.com/${PACKAGES_REPOSITORY}/tree/${head}/targets/${files.directory.split("/").at(-1)}`,
 			"",
 		].join("\n"),
 	);
 	const created = yield* runCommand(
 		"gh",
-		["release", "create", tag, "--repo", "effectified/engine", "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, tarball],
+		["release", "create", tag, "--repo", PACKAGES_REPOSITORY, "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, tarball],
 		root,
 	);
 	if (created.exitCode !== 0) return yield* new StepError({ step: "gh release", reason: tail(created.output) });

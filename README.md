@@ -2,9 +2,12 @@
 
 Give it a library, get it back in [Effect](https://effect.website): every async call an `Effect`, every async iterable a `Stream`, every resource scoped, every failure a tagged error. Then keep it in step with upstream, every day, by itself.
 
+This repository is the engine. The facades it makes, and the recipes, tests and decisions people and agents add to them, live in **[effectified/packages](https://github.com/effectified/packages)**: that is where a library is added, synced and released.
+
 ```sh
+# in a checkout of effectified/packages, which pins the engine
 pnpm install --ignore-scripts
-node src/bin.ts make https://github.com/taskforcesh/bullmq     # or an npm name: bullmq, bullmq@6.7.10
+pnpm effectify make https://github.com/taskforcesh/bullmq     # or an npm name: bullmq, bullmq@6.7.10
 ```
 
 ```
@@ -39,38 +42,25 @@ const program = Effect.scoped(
 | **draft** | Writes `recipe.json`: every decision the types cannot make (which exports to offer, each handle's release method, which events become Streams, the error mapping, the services), each with its reason and who decided it. A redraft keeps what agents and people decided. | the package README, the scan |
 | **generate** | Writes the facade package. Its types are **derived** from upstream's (`Effectified<Upstream.Page, ...>` keeps every overload, drops callback overloads, lifts handles, scopes releasable ones); generic methods and exports are written out from upstream's own declarations so their type parameters survive. Every handle's spec `satisfies` what upstream's types say, so a facade that no longer matches upstream does not compile and names what moved. | a self-contained runtime (`src/runtime/effectify.ts`) copied into each facade |
 | **reconcile** | Type checks with TypeScript 7 and turns what the compiler says into recipe overrides, until the package compiles: the facade's types are the compiler's, and the runtime follows them. | `tsc` (native) |
-| **plan** | Splits the judgment work (review the recipe, test each handle, settle overrides, write the docs) into units with self-contained briefs, file boundaries, dependencies and acceptance commands, for coding agents fanned out by **T3 Code**. | `skills/effectify-t3` |
-| **sync** | Every day (`.github/workflows/sync.yml`): a newer upstream version is studied, its **drift** written (`DRIFT.md`: added, removed, changed, breaking or not), the recipe redrafted, the facade regenerated, type checked and tested, and a pull request opened. | `drift`, `sync` |
+| **plan** | Splits the judgment work (review the recipe, test each handle, settle overrides, write the docs) into units with self-contained briefs, file boundaries, dependencies and acceptance commands, for coding agents fanned out by **T3 Code**. | `skills/effectify-t3` in effectified/packages |
+| **sync** | Every day (effectified/packages' `sync.yml`): a newer upstream version is studied, its **drift** written (`DRIFT.md`: added, removed, changed, breaking or not), the recipe redrafted, the facade regenerated, type checked and tested, and a pull request opened. | `drift`, `sync` |
 | **usages** | Lists where an application uses a library, as a checklist for moving it onto the facade. | ast-grep |
 
 Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `test`, `plan`, `drift`, `sync`, `usages`, `release`; `make` runs the first five.
 
-## Targets
+## Install
 
-Five famous libraries without Effect support (none on npm, none in Effect itself, none in alchemy-run/distilled), effectified by the engine and tested against the real thing. Each lives in `targets/<name>/`: `surface.json`, `scan.json`, `recipe.json`, and the generated `package/` with its behaviour tests.
+Released on GitHub as `v<version>`, never replaced:
 
-| Library | Weekly downloads | Exercises | Facade | Tests (real library) |
-|---|---|---|---|---|
-| [nodemailer](https://nodemailer.com) | 40M | factory → scoped transport, error codes (`EAUTH`, `ECONNECTION`) | `@effectified/nodemailer` | 3, JSON transport and a refused SMTP port |
-| [simple-git](https://github.com/steveukx/git-js) | 15M | 70 chainable thenable methods, generics kept (`log<T = DefaultLogFields>`), error hierarchy from types | `@effectified/simple-git` | 2, git in a temp repository |
-| [sharp](https://sharp.pixelplumbing.com) | 169M | a builder that is also a Node stream, native code | `@effectified/sharp` | 2, images in memory |
-| [puppeteer-core](https://pptr.dev) | 35M | 16 handles, scoped browser and pages, error hierarchy (`TimeoutError`), 39 generic methods kept | `@effectified/puppeteer-core` | 3, a local Chrome |
-| [bullmq](https://bullmq.io) | 14M | classes with generic overloaded constructors, events as Streams, four services | `@effectified/bullmq` | 2, Redis |
+```sh
+pnpm add -D https://github.com/effectified/engine/releases/download/v0.1.0/effectified-engine-0.1.0.tgz
+```
 
-## For agents
+The package carries the `effectify` command, built to JavaScript, and the runtimes it copies into every facade (`src/runtime`). After CI passes on `main`, `release.yml` releases the version in `package.json` if it is not released yet.
 
-`skills/` holds the skills an agent follows, written for T3 Code as the orchestrator:
+## Facades and skills
 
-| Skill | For |
-|---|---|
-| [`effectify`](skills/effectify/SKILL.md) | The entry point: a GitHub URL or npm name to a tested facade |
-| [`effectify-t3`](skills/effectify-t3/SKILL.md) | Orchestrating it in T3 Code: the plan's units as delegates in worktrees, merged in order |
-| [`effectify-recipe`](skills/effectify-recipe/SKILL.md) | Reviewing and deciding a recipe |
-| [`effectify-tests`](skills/effectify-tests/SKILL.md) | Behaviour tests against the real library and local services |
-| [`effectify-ui`](skills/effectify-ui/SKILL.md) | Frontend libraries on Effect UI: bindings, mounts, and tests in Chrome |
-| [`effectify-sync`](skills/effectify-sync/SKILL.md) | Following upstream releases |
-| [`effectify-migrate`](skills/effectify-migrate/SKILL.md) | Moving an application onto a facade |
-| [`effectify-engine`](skills/effectify-engine/SKILL.md) | Improving the engine when a target exposes a gap |
+The facades (15 so far: nodemailer, simple-git, sharp, puppeteer-core, bullmq, and ten frontend libraries on Effect UI) and the skills agents follow to make and keep them (`effectify`, `effectify-t3`, `effectify-recipe`, `effectify-tests`, `effectify-ui`, `effectify-sync`, `effectify-migrate`) are in [effectified/packages](https://github.com/effectified/packages). This repository keeps [`skills/effectify-engine`](skills/effectify-engine/SKILL.md): improving the engine when a facade exposes a gap.
 
 ## Known limits
 
@@ -80,13 +70,16 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 - A generic method whose signature names a type upstream does not export is typed through a call (`Effectify.lifted`), which keeps its type parameters: puppeteer's `page.$eval("input#name", (input) => input.value)` is an `Effect<string>`. When TypeScript cannot infer through the call (type parameters whose defaults depend on each other, `recipe.unlifted`), the method keeps the derived type, its type parameters as their constraints. An overloaded generic method keeps its written-out overloads, or the derived type.
 - Event payloads are typed when the emitter keys its listeners by name (`on<U extends keyof Listeners>(event: U, listener: Listeners[U])`, as bullmq and puppeteer do): `events.Worker.completed(worker)` is a `Stream` of `[job, result, previous]`. Other emitters give `ReadonlyArray<unknown>`.
 - A method without a promise overload whose trailing callback reports its result is an `Effect` too: the analyzer reads the callback's shape (`node`: an error first, then the value; `done`: a parameterless `callback`, `done` or `next`), and the facade completes when upstream calls back (nodemailer's `Transport.send`). Any other callback is an argument like the rest (a key handler), and the method keeps upstream's type.
-- Facades are released on GitHub, not npm, as `<name>-v<version>` (a facade's version is its upstream's, `+<revision>` for a later facade of the same upstream). After CI passes on `main`, `release.yml` runs `node src/bin.ts release`, which releases every facade whose version is not released yet; `release <name>` releases one by hand.
+- Facades are released on GitHub, not npm, as `<name>-v<version>` of effectified/packages (a facade's version is its upstream's, `+<revision>` for a later facade of the same upstream). After CI passes there, `effectify release` releases every facade whose version is not released yet; `release <name>` releases one by hand.
 
 ## Develop
 
 ```sh
 pnpm check   # TypeScript 7
-pnpm test    # the runtime's type rules and behaviour, the engine's parts, and every target regenerated byte for byte
+pnpm test    # the runtime's type rules and behaviour, the engine's parts, and the generator against test/fixtures
+pnpm build   # dist/, what the release runs
 ```
+
+`test/fixtures` holds the surface, recipe and generated `src/index.ts` of eight facades from effectified/packages. A change to the generator that changes them is either a bug or intended: then `pnpm test -u` rewrites them, and the facades are regenerated in effectified/packages when it moves to the new engine (see `skills/effectify-engine`).
 
 Node 24 or later. Built on Effect 4. Not an official Effect project. MIT.

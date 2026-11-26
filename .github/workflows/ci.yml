@@ -1,5 +1,6 @@
-# The engine and every target: type check and test the engine; then, per target, regenerate the facade (it must
-# match what is committed), type check it with TypeScript 7, and run its tests against the real library and services.
+# The engine: type check, test (the runtime's type rules, the engine's parts, the generator against its fixtures),
+# build, and check that the packed engine runs from an install. The facades it makes are tested where they live,
+# in effectified/packages.
 name: ci
 
 on:
@@ -27,37 +28,12 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm check
       - run: pnpm test
-
-  targets:
-    needs: engine
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          [bullmq, nodemailer, puppeteer-core, sharp, simple-git, awesome.me__webawesome, chart.js, codemirror__view, emoji-picker-element, fluentui__web-components, maplibre-gl, material__web, media-chrome, motion, xterm__xterm]
-    services:
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-    env:
-      REDIS_URL: redis://127.0.0.1:6379
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Chrome for puppeteer-core and the Effect UI facades
-        run: echo "CHROME_BIN=$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
-      - name: Regenerate and type check with TypeScript 7
-        run: node src/bin.ts reconcile ${{ matrix.target }}
-      - name: The committed facade is what the engine generates
-        run: git diff --exit-code -- targets/${{ matrix.target }}
-      - name: Behaviour tests against the real library
-        run: node src/bin.ts test ${{ matrix.target }}
-      - name: The release build compiles
-        working-directory: targets/${{ matrix.target }}/package
-        run: node node_modules/typescript/bin/tsc -p tsconfig.build.json
+      - run: pnpm build
+      - name: The packed engine runs from an install
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/install" && cd "$RUNNER_TEMP/install"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/effectified-engine-*.tgz
+          npx effectify --version
+          test -f node_modules/@effectified/engine/src/runtime/effectify.ts

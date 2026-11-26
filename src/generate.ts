@@ -4,7 +4,7 @@
 // inputs write the same bytes.
 
 import { Effect, FileSystem, Path } from "effect";
-import { facadeVersion, type Recipe } from "./recipe.ts";
+import { facadeVersion, type Recipe, releaseUrl } from "./recipe.ts";
 import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
 
@@ -21,7 +21,9 @@ export type Files = ReadonlyMap<string, string>;
 export const generate = Effect.fn("generate")(function* (surface: Surface, recipe: Recipe) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const runtimes = path.join(path.dirname(new URL(import.meta.url).pathname), "runtime");
+	// The runtimes are copied as source, so the released engine ships src/runtime beside dist/: `../src/runtime`
+	// resolves from both.
+	const runtimes = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "runtime");
 	if (recipe.ui !== undefined) {
 		const uiRuntime = yield* fs.readFileString(path.join(runtimes, "ui.ts"));
 		return uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime) satisfies Files;
@@ -604,11 +606,4 @@ function readme(surface: Surface, recipe: Recipe): string {
 		"```",
 		"",
 	].join("\n");
-}
-
-/** Where `effectify release` publishes a facade: a release of effectified/engine tagged `<name>-v<version>`. */
-export function releaseUrl(recipe: Recipe): string {
-	const name = recipe.name.replace(/^@effectified\//, "");
-	const version = facadeVersion(recipe);
-	return `https://github.com/effectified/engine/releases/download/${name}-v${version}/effectified-${name}-${version}.tgz`;
 }
