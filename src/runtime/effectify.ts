@@ -70,6 +70,9 @@ export type MethodResult<R, E, H extends HandleEntry> = IsAny<R> extends true
 				? Stream.Stream<V, E>
 				: R;
 
+/** What an async iterable becomes in a facade: a `Stream` of what it yields. */
+export type Streamed<R, E> = R extends AsyncIterable<infer V> ? Stream.Stream<V, E> : never;
+
 /** One method signature of a handle in facade form. */
 export type MethodSignature<F, E, H extends HandleEntry> = F extends (...args: infer A) => infer R
 	? IsCallbackStyle<A, R> extends true
@@ -213,6 +216,22 @@ export interface HandleSpec {
 	readonly returns?: Readonly<Record<string, string>>;
 	/** Properties the facade reads through from upstream (live): `true`, or the handle a property holds. */
 	readonly properties?: Readonly<Record<string, string | true>>;
+	/** Where methods take an `AbortSignal`: the facade passes one that interrupting the call's fiber aborts. */
+	readonly signal?: Readonly<Record<string, SignalSlot>>;
+}
+
+/** Where a call takes its `AbortSignal`: the argument at `index`, or its field `property` (an options object). */
+export interface SignalSlot {
+	readonly index: number;
+	readonly property?: string;
+}
+
+/** What the generator knows of an exported function at run time beyond its result's handle. */
+export interface EntryOptions {
+	/** Where the function takes an `AbortSignal`. */
+	readonly signal?: SignalSlot;
+	/** The function returns an async iterable: each call is a `Stream` of it, as its facade type says. */
+	readonly stream?: true;
 }
 
 /** A handle's spec as the generator writes it, and how to release it when it is scoped. */
@@ -261,11 +280,22 @@ export function effectify<T extends object, E>(
 					classify,
 				);
 		} else if (kind.spec.async[key]) {
+			const slot = kind.spec.signal?.[key];
 			facade[key] = (...args: Array<unknown>) =>
-				resolve(() => method.apply(upstream, args) as PromiseLike<unknown>, operation, into, kinds, classify);
+				resolve(
+					// `Effect.tryPromise` makes, and aborts on interruption, a signal only for a function that takes one.
+					slot === undefined
+						? () => method.apply(upstream, args) as PromiseLike<unknown>
+						: (signal: AbortSignal) => method.apply(upstream, withSignal(args, slot, signal)) as PromiseLike<unknown>,
+					operation,
+					into,
+					kinds,
+					classify,
+				);
 		} else if (kind.spec.stream?.[key]) {
+			const slot = kind.spec.signal?.[key];
 			facade[key] = (...args: Array<unknown>) =>
-				Stream.fromAsyncIterable(method.apply(upstream, args) as AsyncIterable<unknown>, (cause) => classify(operation, cause));
+				iterate((signal) => method.apply(upstream, withSignal(args, slot, signal)) as AsyncIterable<unknown>, operation, classify);
 		} else if (into !== undefined) {
 			facade[key] = (...args: Array<unknown>) => wrap(method.apply(upstream, args), into, kinds, classify);
 		} else {
@@ -294,10 +324,10 @@ export function entry<F extends (...args: never) => unknown, E, H extends Handle
 	into: HandleKind | undefined,
 	kinds: Readonly<Record<string, HandleKind>>,
 	classify: Classify<E>,
+	options: EntryOptions = {},
 ): EffectFunction<F, E, H> {
-	const invoke = fn as unknown as (...args: Array<unknown>) => unknown;
-	// `EffectFunction` describes, overload by overload, what `call` does with each result.
-	return ((...args: Array<unknown>) => call(() => invoke(...args), operation, into, kinds, classify)) as unknown as EffectFunction<F, E, H>;
+	// `EffectFunction` describes, overload by overload, what `invoker` does with each result.
+	return invoker(fn as unknown as (...args: Array<unknown>) => unknown, operation, into, kinds, classify, options) as unknown as EffectFunction<F, E, H>;
 }
 
 /** An exported class in facade form: constructing runs as an `Effect` of the instance's facade, scoped if releasable. */
@@ -307,10 +337,11 @@ export function construct<C extends abstract new (...args: never) => unknown, E,
 	into: HandleKind,
 	kinds: Readonly<Record<string, HandleKind>>,
 	classify: Classify<E>,
+	options: EntryOptions = {},
 ): (...args: ConstructorParameters<C>) => Resolved<InstanceType<C>, E, H> {
 	const make = Class as unknown as new (...args: Array<unknown>) => unknown;
 	// `Resolved` describes what `call` does with the instance: its facade, in a scope when the handle is releasable.
-	return ((...args: Array<unknown>) => call(() => new make(...args), operation, into, kinds, classify)) as never;
+	return invoker((...args) => new make(...args), operation, into, kinds, classify, options) as never;
 }
 
 /**
@@ -323,10 +354,10 @@ export function entryAs<T>(
 	into: HandleKind | undefined,
 	kinds: Readonly<Record<string, HandleKind>>,
 	classify: Classify<unknown>,
+	options: EntryOptions = {},
 ): T {
-	const invoke = fn as unknown as (...args: Array<unknown>) => unknown;
 	// `T` restates upstream's overloads with `call`'s results; the compiler checks it against upstream when generated.
-	return ((...args: Array<unknown>) => call(() => invoke(...args), operation, into, kinds, classify)) as T;
+	return invoker(fn as unknown as (...args: Array<unknown>) => unknown, operation, into, kinds, classify, options) as T;
 }
 
 /** `construct` typed by the generator: for generic classes, whose constructor parameters `ConstructorParameters` loses. */
@@ -336,10 +367,25 @@ export function constructAs<T>(
 	into: HandleKind,
 	kinds: Readonly<Record<string, HandleKind>>,
 	classify: Classify<unknown>,
+	options: EntryOptions = {},
 ): T {
 	const make = Class as unknown as new (...args: Array<unknown>) => unknown;
 	// As in `entryAs`: `T` restates upstream's constructors with `call`'s result.
-	return ((...args: Array<unknown>) => call(() => new make(...args), operation, into, kinds, classify)) as T;
+	return invoker((...args) => new make(...args), operation, into, kinds, classify, options) as T;
+}
+
+/** The facade form of an exported function or constructor: a `Stream` of what it iterates, or an `Effect` (`call`). */
+function invoker<E>(
+	invoke: (...args: Array<unknown>) => unknown,
+	operation: string,
+	into: HandleKind | undefined,
+	kinds: Readonly<Record<string, HandleKind>>,
+	classify: Classify<E>,
+	options: EntryOptions,
+): (...args: Array<unknown>) => unknown {
+	const { signal: slot, stream } = options;
+	if (stream === true) return (...args) => iterate((signal) => invoke(...withSignal(args, slot, signal)) as AsyncIterable<unknown>, operation, classify);
+	return (...args) => call((signal) => invoke(...withSignal(args, slot, signal)), operation, into, kinds, classify);
 }
 
 /** The fields every generated error has: the operation that failed, its message, the upstream code, and the cause. */
@@ -366,16 +412,63 @@ export function call<E>(
 	classify: Classify<E>,
 ): Effect.Effect<unknown, E, Scope.Scope> {
 	return Effect.suspend(() => {
+		const controller = new AbortController();
 		let result: unknown;
 		try {
-			result = thunk(new AbortController().signal);
+			result = thunk(controller.signal);
 		} catch (cause) {
 			return Effect.fail(classify(operation, cause));
 		}
-		return isPromiseLike(result)
-			? resolve(() => result as PromiseLike<unknown>, operation, into, kinds, classify)
-			: acquire(Effect.succeed(result), into, kinds, classify);
+		if (!isPromiseLike(result)) return acquire(Effect.succeed(result), into, kinds, classify);
+		// The call has started: interrupting its Effect aborts the signal it was given.
+		return resolve(() => result as PromiseLike<unknown>, operation, into, kinds, classify).pipe(
+			Effect.onInterrupt(() => Effect.sync(() => controller.abort())),
+		);
 	});
+}
+
+/**
+ * An async iterable as a `Stream`, started when the stream runs. The signal it was given is aborted when the stream
+ * ends, early (interrupted, `take`) or not, so upstream stops producing.
+ */
+function iterate<E>(start: (signal: AbortSignal) => AsyncIterable<unknown>, operation: string, classify: Classify<E>): Stream.Stream<unknown, E> {
+	return Stream.unwrap(
+		Effect.sync(() => {
+			const controller = new AbortController();
+			return Stream.fromAsyncIterable(start(controller.signal), (cause) => classify(operation, cause)).pipe(
+				Stream.ensuring(Effect.sync(() => controller.abort())),
+			);
+		}),
+	);
+}
+
+/**
+ * `args` with `signal` where the call takes its signal: in place of a missing argument, combined with one the caller
+ * passed (`AbortSignal.any`), or as the `signal` field of the options object, which is copied, not changed. An
+ * options argument that is no plain object (a class instance) is left as it is.
+ */
+function withSignal(args: ReadonlyArray<unknown>, slot: SignalSlot | undefined, signal: AbortSignal): Array<unknown> {
+	if (slot === undefined) return [...args];
+	const next = [...args];
+	while (next.length <= slot.index) next.push(undefined);
+	const given = next[slot.index];
+	if (slot.property === undefined) {
+		next[slot.index] = given instanceof AbortSignal ? AbortSignal.any([given, signal]) : given === undefined ? signal : given;
+		return next;
+	}
+	if (given === undefined || given === null) {
+		next[slot.index] = { [slot.property]: signal };
+	} else if (isPlainObject(given)) {
+		const own = given[slot.property];
+		next[slot.index] = { ...given, [slot.property]: own instanceof AbortSignal ? AbortSignal.any([own, signal]) : signal };
+	}
+	return next;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null) return false;
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
 }
 
 /** Awaits an upstream promise as an `Effect`, and wraps its value when it is a handle (scoped if releasable). */

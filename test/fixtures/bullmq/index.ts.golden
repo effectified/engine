@@ -231,6 +231,7 @@ const kinds = {
 			returns: { "getNextJob": "Job", "off": "Worker", "on": "Worker", "once": "Worker" },
 			callback: {} satisfies Record<WorkerCallbacks, "node" | "done">,
 			properties: { "backend": true, "closing": true, "concurrency": true, "id": true, "jobScheduler": true, "keys": true, "maximumBlockTimeout": true, "minimumBlockTimeout": true, "name": true, "opts": true, "qualifiedName": true } satisfies Record<WorkerProperties, string | true>,
+			signal: { "delay": { index: 1, property: "signal" } },
 		},
 		release: "close",
 	},

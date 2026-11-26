@@ -14,6 +14,7 @@ import {
 	type Signature as TsSignature,
 	type Symbol as TsSymbol,
 	type Type,
+	TypeFlags,
 	type TypeReference,
 } from "typescript/unstable/sync";
 import type { Export, Handle, Signature, Surface, Trait } from "./surface.ts";
@@ -191,7 +192,8 @@ class SurfaceReader {
 		const returnType = checker.getReturnTypeOfSignature(signature);
 		const returns = returnType === undefined ? "unknown" : this.print(returnType);
 		const traits: Array<Trait> = [];
-		if (parameters.some((parameter) => parameter.type.includes("AbortSignal"))) traits.push("signal");
+		const signal = this.signalSlot(declared, signature.hasRestParameter);
+		if (signal !== undefined) traits.push("signal");
 		const resolved = returnType === undefined ? undefined : this.promised(returnType);
 		const produced = resolved ?? returnType;
 		const handle = produced === undefined ? undefined : this.handleOf(produced, `Awaited<ReturnType<${via}>>`, depth);
@@ -209,8 +211,31 @@ class SurfaceReader {
 			returns,
 			...(resolved === undefined ? {} : { resolves: this.print(resolved) }),
 			...(handle === undefined ? {} : { handle }),
+			...(signal === undefined ? {} : { signal }),
 			traits,
 		};
+	}
+
+	/**
+	 * Where a signature takes its `AbortSignal`: a parameter typed `AbortSignal` (optional or not), or the `signal`
+	 * field of an options-object parameter (`{ signal?: AbortSignal }`). A rest parameter is never one.
+	 */
+	private signalSlot(parameters: ReadonlyArray<TsSymbol>, hasRest: boolean): { readonly index: number; readonly property?: string } | undefined {
+		for (const [index, parameter] of parameters.entries()) {
+			if (hasRest && index === parameters.length - 1) break;
+			const type = this.checker.getTypeOfSymbol(parameter);
+			if (type === undefined) continue;
+			const present = this.checker.getNonNullableType(type) ?? type;
+			if (this.isAbortSignal(present)) return { index };
+			const field = present.isUnionType() || (present.flags & TypeFlags.Object) === 0 ? undefined : this.checker.getPropertyOfType(present, "signal");
+			const fieldType = field === undefined ? undefined : this.checker.getTypeOfSymbol(field);
+			if (fieldType !== undefined && this.isAbortSignal(this.checker.getNonNullableType(fieldType) ?? fieldType)) return { index, property: "signal" };
+		}
+		return undefined;
+	}
+
+	private isAbortSignal(type: Type): boolean {
+		return type.getSymbol()?.name === "AbortSignal";
 	}
 
 	/**

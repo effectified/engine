@@ -1821,7 +1821,12 @@
 					"trailingCallback": false,
 					"returns": "Promise<void>",
 					"resolves": "void",
+					"signal": {
+						"index": 1,
+						"property": "signal"
+					},
 					"traits": [
+						"signal",
 						"async"
 					]
 				}
@@ -11954,7 +11959,12 @@
 						"trailingCallback": false,
 						"returns": "Promise<void>",
 						"resolves": "void",
+						"signal": {
+							"index": 1,
+							"property": "signal"
+						},
 						"traits": [
+							"signal",
 							"async"
 						]
 					}

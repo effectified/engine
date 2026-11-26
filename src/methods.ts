@@ -41,6 +41,30 @@ export function callbackMethods(name: string, methods: Readonly<Record<string, R
 	return found;
 }
 
+/** Where a call takes its `AbortSignal`, as the analyzer read it. */
+export type SignalSlot = NonNullable<Signature["signal"]>;
+
+/** Where the wrapped async and stream methods of handle `name` take their `AbortSignal`. */
+export function signalSlots(name: string, methods: Readonly<Record<string, ReadonlyArray<Signature>>>, recipe: Recipe): Readonly<Record<string, SignalSlot>> {
+	const found: Record<string, SignalSlot> = {};
+	for (const method of [...classified(name, methods, recipe, "async"), ...classified(name, methods, recipe, "stream")].sort()) {
+		const slot = agreedSignal(methods[method] ?? []);
+		if (slot !== undefined) found[method] = slot;
+	}
+	return found;
+}
+
+/**
+ * The one place every overload that takes an `AbortSignal` takes it; undefined when none takes one, or when they
+ * disagree (the runtime puts the signal at one place for every call).
+ */
+export function agreedSignal(signatures: ReadonlyArray<Signature>): SignalSlot | undefined {
+	const slots = signatures.flatMap((signature) => (signature.signal === undefined ? [] : [signature.signal]));
+	const [first] = slots;
+	if (first === undefined) return undefined;
+	return slots.every((slot) => slot.index === first.index && slot.property === first.property) ? first : undefined;
+}
+
 /** The properties of handle `name` the facade reads through: all the analyzer read, less `exclude`s and `upstream`. */
 export function wrappedProperties(name: string, handle: Handle, recipe: Recipe): ReadonlyArray<string> {
 	return Object.keys(handle.properties)

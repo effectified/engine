@@ -6,15 +6,15 @@
 import { Effect, FileSystem, Path } from "effect";
 import { docsFiles, type TestDocs } from "./docs.ts";
 import { description, facadeVersion, type Recipe } from "./recipe.ts";
-import { callbackMethods, classified, wrappedMethods, wrappedProperties } from "./methods.ts";
+import { agreedSignal, callbackMethods, classified, type SignalSlot, signalSlots, wrappedMethods, wrappedProperties } from "./methods.ts";
 import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
 export const ENGINE_VERSION = "0.2.0";
 
-/** Pinned versions a generated package builds with. */
-const TOOLCHAIN = { effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7", vitest: "5.1.1", "@effect/vitest": "4.1.5" } as const;
+/** Pinned versions a generated package builds with; the analyzer reads upstream with the same Node types. */
+export const TOOLCHAIN ={ effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7", vitest: "5.1.1", "@effect/vitest": "4.1.5" } as const;
 
 /** Files of a generated package, by path relative to the package. */
 export type Files = ReadonlyMap<string, string>;
@@ -148,6 +148,7 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 			})
 			.sort();
 		const release = recipe.handles[name]?.release;
+		const signals = Object.entries(signalSlots(name, handle.methods, recipe)).map(([method, slot]) => `${JSON.stringify(method)}: ${slotSource(slot)}`);
 		push(
 			`\t${name}: {`,
 			`\t\tname: ${JSON.stringify(name)},`,
@@ -163,6 +164,7 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 					return `${JSON.stringify(property)}: ${held !== undefined && recipe.handles[held] !== undefined ? JSON.stringify(held) : "true"}`;
 				}),
 			)} satisfies Record<${name}Properties, string | true>,`,
+			...(signals.length === 0 ? [] : [`\t\t\tsignal: ${record(signals)},`]),
 			"\t\t},",
 			...(release === undefined ? [] : [`\t\trelease: ${JSON.stringify(release)},`]),
 			"\t},",
@@ -296,7 +298,9 @@ function explicitSignature(
 		.join(", ");
 	const result = signature.traits.includes("async")
 		? `Effectify.Resolved<${qualify(signature.resolves ?? "unknown", local)}, Failure, Handles>`
-		: mode === "export"
+		: mode === "export" && signature.traits.includes("stream")
+			? `Effectify.Streamed<${qualify(signature.returns, local)}, Failure>`
+			: mode === "export"
 			? `Effectify.Resolved<${qualify(signature.returns, local)}, Failure, Handles>`
 			: signature.traits.includes("returns-this")
 				? handle
@@ -359,23 +363,25 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 		const kind = into === undefined ? "undefined" : `kinds.${into}`;
 		const doc = `/** \`${recipe.package}.${item.name}\` in facade form: every call is an Effect${into === undefined ? "" : ` of a ${into}`}. */`;
 		const kept = item.signatures.filter((signature) => !signature.traits.includes("callback"));
+		const options = entryOptions(kept);
 		if (isExplicit(item.name, kept, recipe)) {
 			return [
 				doc,
 				`export const ${facadeName} = Effectify.entryAs<{`,
 				...kept.map((signature) => `\t${explicitSignature(facadeName, signature, qualify, "export")}; // explicit: ${item.name}`),
-				`}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify);`,
+				`}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 			];
 		}
 		return [
 			doc,
-			`export const ${facadeName} = Effectify.entry<${instantiated(item.name, kept, surface)}, Failure, Handles>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify);`,
+			`export const ${facadeName} = Effectify.entry<${instantiated(item.name, kept, surface)}, Failure, Handles>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 		];
 	}
 	if (item.kind === "class" && recipe.handles[item.handle] !== undefined) {
 		const handle = surface.handles[item.handle];
 		const doc = `/** Constructs a ${recipe.package} \`${item.name}\` as an Effect of its facade${recipe.handles[item.handle]?.release === undefined ? "" : ", released when the scope closes"}. */`;
 		const operation = JSON.stringify(`new ${item.name}`);
+		const options = entryOptions(item.constructors);
 		if (handle !== undefined && isExplicit(item.name, item.constructors, recipe)) {
 			const instance = { resolves: handle.typeRef, traits: ["async" as const] };
 			return [
@@ -384,12 +390,12 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 				...item.constructors.map(
 					(signature) => `\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, "export")}; // explicit: ${item.name}`,
 				),
-				`}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify);`,
+				`}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
 			];
 		}
 		return [
 			doc,
-			`export const make${item.name} = Effectify.construct<${instantiated(item.name, item.constructors, surface)}, Failure, Handles>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify);`,
+			`export const make${item.name} = Effectify.construct<${instantiated(item.name, item.constructors, surface)}, Failure, Handles>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
 		];
 	}
 	return [`// ${item.name} is offered by the recipe but is no function or wrapped class; use Upstream.${item.name}.`];
@@ -458,6 +464,22 @@ function splitTopLevel(text: string, separator = ","): ReadonlyArray<string> {
 /** Whether an export is typed by its overloads written out: it is generic, and the recipe does not keep it derived. */
 function isExplicit(name: string, signatures: ReadonlyArray<Signature>, recipe: Recipe): boolean {
 	return signatures.length > 0 && signatures.some((signature) => signature.typeParameters !== undefined) && !recipe.derived.includes(name);
+}
+
+/**
+ * The runtime options of an exported function, as a trailing argument (`, { signal: { index: 1 } }`), empty when it
+ * has none: where it takes its `AbortSignal`, and whether every signature the facade keeps returns an async iterable
+ * that is no handle (its facade type is then a `Stream`, which the runtime must return too).
+ */
+function entryOptions(signatures: ReadonlyArray<Signature>): string {
+	const slot = agreedSignal(signatures);
+	const stream = signatures.length > 0 && signatures.every((signature) => signature.traits.includes("stream"));
+	const fields = [...(slot === undefined ? [] : [`signal: ${slotSource(slot)}`]), ...(stream ? ["stream: true"] : [])];
+	return fields.length === 0 ? "" : `, { ${fields.join(", ")} }`;
+}
+
+function slotSource(slot: SignalSlot): string {
+	return slot.property === undefined ? `{ index: ${slot.index} }` : `{ index: ${slot.index}, property: ${JSON.stringify(slot.property)} }`;
 }
 
 function producedHandle(signatures: ReadonlyArray<Signature>, recipe: Recipe): string | undefined {

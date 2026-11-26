@@ -1,7 +1,7 @@
 // The runtime facades carry: what the types promise (checked by tsc) and what the objects do (run here).
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
-import { Effect, Exit, Schema, Scope, Stream } from "effect";
-import { type Effectified, effectify, type HandleKind } from "../src/runtime/effectify.ts";
+import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect";
+import { type Effectified, effectify, entry, type HandleKind } from "../src/runtime/effectify.ts";
 
 class Connection {
 	closed = false;
@@ -132,6 +132,122 @@ describe("effectify", () => {
 			expect(upstream.last).toBeUndefined();
 			yield* Effect.scoped(effect);
 			expect(upstream.last).toBeDefined();
+		}),
+	);
+});
+
+/** An upstream whose calls wait until their signal aborts, and record what they were given. */
+class Fetcher {
+	seen: Array<AbortSignal | undefined> = [];
+	options: Array<Record<string, unknown> | undefined> = [];
+	/** Takes its signal as a parameter. */
+	wait(label: string, signal?: AbortSignal): Promise<string> {
+		this.seen.push(signal);
+		return untilAborted(signal, label);
+	}
+	/** Takes its signal in an options object. */
+	request(url: string, options?: { readonly signal?: AbortSignal; readonly retries?: number }): Promise<string> {
+		this.seen.push(options?.signal);
+		this.options.push(options);
+		return untilAborted(options?.signal, url);
+	}
+	async *pages(options?: { readonly signal?: AbortSignal }): AsyncIterable<number> {
+		this.seen.push(options?.signal);
+		for (let page = 1; ; page++) yield page;
+	}
+}
+
+function untilAborted(signal: AbortSignal | undefined, value: string): Promise<string> {
+	return new Promise((resolve, reject) => {
+		if (value === "now") return resolve(value);
+		signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+	});
+}
+
+const fetcher = (upstream: Fetcher) =>
+	effectify(
+		upstream,
+		{
+			name: "Fetcher",
+			spec: {
+				methods: ["wait", "request", "pages"],
+				async: { wait: true, request: true },
+				stream: { pages: true },
+				signal: { wait: { index: 1 }, request: { index: 1, property: "signal" }, pages: { index: 0, property: "signal" } },
+			},
+		},
+		{},
+		classify,
+	) as unknown as Effectified<Fetcher, TestError, never>;
+
+describe("interruption", () => {
+	it.live("aborts the signal a method takes as a parameter when its fiber is interrupted", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			const fiber = yield* Effect.forkChild(fetcher(upstream).wait("slow"));
+			yield* Effect.yieldNow;
+			yield* Fiber.interrupt(fiber);
+			expect(upstream.seen[0]?.aborted).toBe(true);
+		}),
+	);
+
+	it.live("puts the signal into an options object, keeping the caller's other options and signal", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			const own = new AbortController();
+			const fiber = yield* Effect.forkChild(fetcher(upstream).request("slow", { retries: 2, signal: own.signal }));
+			yield* Effect.yieldNow;
+			expect(upstream.options[0]?.["retries"]).toBe(2);
+			expect(upstream.seen[0]?.aborted).toBe(false);
+			yield* Fiber.interrupt(fiber);
+			expect(upstream.seen[0]?.aborted).toBe(true);
+			expect(own.signal.aborted).toBe(false);
+		}),
+	);
+
+	it.live("aborts when the caller's own signal aborts", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			const own = new AbortController();
+			const fiber = yield* Effect.forkChild(Effect.exit(fetcher(upstream).wait("slow", own.signal)));
+			yield* Effect.yieldNow;
+			own.abort(new Error("caller"));
+			const exit = yield* Fiber.join(fiber);
+			expect(Exit.isFailure(exit)).toBe(true);
+		}),
+	);
+
+	it.live("aborts a stream's signal when the stream ends early", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			expect(yield* Stream.runCollect(Stream.take(fetcher(upstream).pages(), 2))).toStrictEqual([1, 2]);
+			expect(upstream.seen[0]?.aborted).toBe(true);
+		}),
+	);
+
+	it.live("aborts an exported function's signal when its fiber is interrupted", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			const run = (label: string, signal?: AbortSignal) => upstream.wait(label, signal);
+			const wait = entry<typeof run, TestError, never>(run, "wait", undefined, {}, classify, { signal: { index: 1 } });
+			const fiber = yield* Effect.forkChild(wait("slow"));
+			yield* Effect.yieldNow;
+			yield* Fiber.interrupt(fiber);
+			expect(upstream.seen[0]?.aborted).toBe(true);
+		}),
+	);
+
+	it.live("runs an exported function that returns an async iterable as a Stream", () =>
+		Effect.gen(function* () {
+			const upstream = new Fetcher();
+			const iterate = (options?: { readonly signal?: AbortSignal }) => upstream.pages(options);
+			const pages = entry<typeof iterate, TestError, never>(iterate, "pages", undefined, {}, classify, {
+				signal: { index: 0, property: "signal" },
+				stream: true,
+			});
+			expectTypeOf(pages).returns.toEqualTypeOf<Stream.Stream<number, TestError>>();
+			expect(yield* Stream.runCollect(Stream.take(pages(), 3))).toStrictEqual([1, 2, 3]);
+			expect(upstream.seen[0]?.aborted).toBe(true);
 		}),
 	);
 });

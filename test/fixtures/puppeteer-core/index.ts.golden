@@ -451,6 +451,7 @@ const kinds = {
 			returns: { "createBrowserContext": "BrowserContext", "defaultBrowserContext": "BrowserContext", "launchPWA": "Page", "newPage": "Page", "off": "Browser", "on": "Browser", "once": "Browser", "removeAllListeners": "Browser", "target": "Target", "waitForTarget": "Target" },
 			callback: {} satisfies Record<BrowserCallbacks, "node" | "done">,
 			properties: { "connected": true, "debugInfo": true } satisfies Record<BrowserProperties, string | true>,
+			signal: { "waitForTarget": { index: 1, property: "signal" } },
 		},
 		release: "close",
 	},
@@ -463,6 +464,7 @@ const kinds = {
 			returns: { "browser": "Browser", "newPage": "Page", "off": "BrowserContext", "on": "BrowserContext", "once": "BrowserContext", "removeAllListeners": "BrowserContext", "waitForTarget": "Target" },
 			callback: {} satisfies Record<BrowserContextCallbacks, "node" | "done">,
 			properties: { "closed": true, "id": true } satisfies Record<BrowserContextProperties, string | true>,
+			signal: { "waitForTarget": { index: 1, property: "signal" } },
 		},
 		release: "close",
 	},
@@ -475,6 +477,7 @@ const kinds = {
 			returns: { "addScriptTag": "ElementHandle", "addStyleTag": "ElementHandle", "browser": "Browser", "browserContext": "BrowserContext", "createCDPSession": "CDPSession", "locator": "Locator", "mainFrame": "Frame", "off": "Page", "on": "Page", "once": "Page", "openDevTools": "Page", "queryObjects": "JSHandle", "record": "ScreenRecording", "removeAllListeners": "Page", "screencast": "ScreenRecorder", "target": "Target", "waitForDevicePrompt": "DeviceRequestPrompt", "waitForFileChooser": "FileChooser", "waitForFrame": "Frame", "waitForRequest": "HTTPRequest", "waitForResponse": "HTTPResponse" },
 			callback: {} satisfies Record<PageCallbacks, "node" | "done">,
 			properties: { "accessibility": "Accessibility", "bluetooth": "BluetoothEmulation", "coverage": "Coverage", "keyboard": "Keyboard", "mouse": "Mouse", "touchscreen": "Touchscreen", "tracing": "Tracing", "webmcp": "WebMCP" } satisfies Record<PageProperties, string | true>,
+			signal: { "goBack": { index: 0, property: "signal" }, "goForward": { index: 0, property: "signal" }, "goto": { index: 1, property: "signal" }, "reload": { index: 0, property: "signal" }, "setContent": { index: 1, property: "signal" }, "waitForDevicePrompt": { index: 0, property: "signal" }, "waitForFileChooser": { index: 0, property: "signal" }, "waitForFrame": { index: 1, property: "signal" }, "waitForFunction": { index: 1, property: "signal" }, "waitForNavigation": { index: 0, property: "signal" }, "waitForNetworkIdle": { index: 0, property: "signal" }, "waitForRequest": { index: 1, property: "signal" }, "waitForResponse": { index: 1, property: "signal" }, "waitForSelector": { index: 1, property: "signal" } },
 		},
 		release: "close",
 	},
@@ -510,6 +513,7 @@ const kinds = {
 			returns: { "addScriptTag": "ElementHandle", "addStyleTag": "ElementHandle", "locator": "Locator", "off": "Frame", "on": "Frame", "once": "Frame", "page": "Page", "removeAllListeners": "Frame" },
 			callback: {} satisfies Record<FrameCallbacks, "node" | "done">,
 			properties: { "detached": true } satisfies Record<FrameProperties, string | true>,
+			signal: { "goto": { index: 1, property: "signal" }, "setContent": { index: 1, property: "signal" }, "waitForFunction": { index: 1, property: "signal" }, "waitForNavigation": { index: 0, property: "signal" }, "waitForSelector": { index: 1, property: "signal" } },
 		},
 	},
 	CDPSession: {
@@ -532,6 +536,7 @@ const kinds = {
 			returns: { "clone": "Locator", "filter": "Locator", "map": "Locator", "off": "Locator", "on": "Locator", "once": "Locator", "removeAllListeners": "Locator", "setEnsureElementIsInTheViewport": "Locator", "setTimeout": "Locator", "setVisibility": "Locator", "setWaitForEnabled": "Locator", "setWaitForStableBoundingBox": "Locator" },
 			callback: {} satisfies Record<LocatorCallbacks, "node" | "done">,
 			properties: { "timeout": true } satisfies Record<LocatorProperties, string | true>,
+			signal: { "click": { index: 0, property: "signal" }, "fill": { index: 1, property: "signal" }, "hover": { index: 0, property: "signal" }, "scroll": { index: 0, property: "signal" }, "wait": { index: 0, property: "signal" }, "waitHandle": { index: 0, property: "signal" } },
 		},
 	},
 	JSHandle: {
@@ -555,6 +560,7 @@ const kinds = {
 			returns: { "asLocator": "Locator", "contentFrame": "Frame", "getProperty": "JSHandle", "move": "ElementHandle", "touchStart": "TouchHandle" },
 			callback: {} satisfies Record<ElementHandleCallbacks, "node" | "done">,
 			properties: { "frame": "Frame" } satisfies Record<ElementHandleProperties, string | true>,
+			signal: { "waitForSelector": { index: 1, property: "signal" } },
 		},
 		release: "dispose",
 	},
@@ -613,6 +619,7 @@ const kinds = {
 			returns: {},
 			callback: {} satisfies Record<DeviceRequestPromptCallbacks, "node" | "done">,
 			properties: { "devices": true } satisfies Record<DeviceRequestPromptProperties, string | true>,
+			signal: { "waitForDevice": { index: 1, property: "signal" } },
 		},
 	},
 	Keyboard: {
@@ -719,7 +726,7 @@ const kinds = {
 } satisfies Record<string, Effectify.HandleKind>;
 
 /** `puppeteer-core.launch` in facade form: every call is an Effect of a Browser. */
-export const launch = Effectify.entry<typeof Upstream.launch, Failure, Handles>(Upstream.launch, "launch", kinds.Browser, kinds, classify);
+export const launch = Effectify.entry<typeof Upstream.launch, Failure, Handles>(Upstream.launch, "launch", kinds.Browser, kinds, classify, { signal: { index: 0, property: "signal" } });
 
 /** A puppeteer-core `Browser` as a service; `layer` provides the one `make` acquires (`launch` in facade form), released with the layer. */
 export class PuppeteerBrowser extends Context.Service<PuppeteerBrowser, Browser>()("@effectified/puppeteer-core/PuppeteerBrowser") {

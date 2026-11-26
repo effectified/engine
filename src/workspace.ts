@@ -3,6 +3,7 @@
 
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { runCommand } from "./command.ts";
+import { TOOLCHAIN } from "./generate.ts";
 import type { Target } from "./target.ts";
 
 /** An installed target. */
@@ -52,7 +53,9 @@ export const prepareWorkspace = Effect.fn("prepareWorkspace")(function* (target:
 	if (yield* fs.exists(path.join(workspace.packageDirectory, "package.json")).pipe(Effect.mapError((e) => fail(e.message)))) {
 		return workspace;
 	}
-	const dependencies: Record<string, string> = { [target.package]: target.version };
+	// Node's types are pinned here, as a facade builds with them: found instead wherever the cache sits, they would
+	// differ between machines and checkouts (or be missing, every Buffer `any`), and so would the surface.
+	const dependencies: Record<string, string> = { "@types/node": TOOLCHAIN["@types/node"], [target.package]: target.version };
 	if (target.types.from === "definitely-typed") dependencies[target.types.package] = target.types.version;
 	yield* Effect.all([
 		fs.makeDirectory(directory, { recursive: true }),

@@ -34,6 +34,11 @@ export const Signature = Schema.Struct({
 	resolves: Schema.optional(Schema.String),
 	/** The handle the call produces (awaited), when it produces one. */
 	handle: Schema.optional(Schema.String),
+	/**
+	 * Where the call takes an `AbortSignal`: the parameter at `index`, or its `property` when that parameter is an
+	 * options object (`{ signal }`). The facade puts there a signal that interrupting the call's fiber aborts.
+	 */
+	signal: Schema.optional(Schema.Struct({ index: Schema.Number, property: Schema.optional(Schema.String) })),
 	traits: Schema.Array(Trait),
 });
 export type Signature = typeof Signature.Type;
