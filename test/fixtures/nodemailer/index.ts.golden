@@ -43,11 +43,11 @@ export interface Mail extends Omit<Effectify.Effectified<Upstream.Mail<any, any>
 }
 
 /** The methods of `Transport` the facade wraps: those nodemailer declares itself. */
-type TransportMethods = "send";
+type TransportMethods = "close" | "isIdle" | "on" | "send" | "verify";
 /** The methods of `Transport` that report through a trailing callback: Effects of what it reports. */
 type TransportCallbacks = "send";
 /** The properties of `Transport` the facade reads through. */
-type TransportProperties = "close" | "getSocket" | "isIdle" | "mailer" | "name" | "on" | "supportsAbortSignal" | "verify" | "version";
+type TransportProperties = "getSocket" | "mailer" | "name" | "supportsAbortSignal" | "version";
 
 /** A nodemailer `Transport`: its async methods are Effects, its async iterables Streams, the handles it returns facades. */
 export interface Transport extends Effectify.Effectified<Upstream.Transport<any, any>, Failure, Handles, TransportMethods, TransportProperties, TransportCallbacks> {}
@@ -79,12 +79,12 @@ const kinds = {
 	Transport: {
 		name: "Transport",
 		spec: {
-			methods: ["send"] satisfies ReadonlyArray<TransportMethods>,
+			methods: ["close", "isIdle", "on", "send", "verify"] satisfies ReadonlyArray<TransportMethods>,
 			async: {} satisfies Effectify.AsyncSpec<Pick<Upstream.Transport<any, any>, TransportMethods>>,
 			stream: {} satisfies Effectify.StreamSpec<Pick<Upstream.Transport<any, any>, TransportMethods>, Handles>,
-			returns: {},
+			returns: { "on": "Transport" },
 			callback: { "send": "node" } satisfies Record<TransportCallbacks, "node" | "done">,
-			properties: { "close": true, "getSocket": true, "isIdle": true, "mailer": true, "name": true, "on": true, "supportsAbortSignal": true, "verify": true, "version": true } satisfies Record<TransportProperties, string | true>,
+			properties: { "getSocket": true, "mailer": true, "name": true, "supportsAbortSignal": true, "version": true } satisfies Record<TransportProperties, string | true>,
 		},
 	},
 	Logger: {

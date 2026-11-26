@@ -624,6 +624,81 @@
 							"callback"
 						]
 					}
+				],
+				"verify": [
+					{
+						"parameters": [
+							{
+								"name": "args",
+								"type": "any[]",
+								"optional": false,
+								"rest": true
+							}
+						],
+						"trailingCallback": false,
+						"returns": "any",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"close": [
+					{
+						"parameters": [
+							{
+								"name": "args",
+								"type": "any[]",
+								"optional": false,
+								"rest": true
+							}
+						],
+						"trailingCallback": false,
+						"returns": "any",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"isIdle": [
+					{
+						"parameters": [
+							{
+								"name": "args",
+								"type": "any[]",
+								"optional": false,
+								"rest": true
+							}
+						],
+						"trailingCallback": false,
+						"returns": "any",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"on": [
+					{
+						"parameters": [
+							{
+								"name": "event",
+								"type": "string | symbol",
+								"optional": false,
+								"rest": false
+							},
+							{
+								"name": "listener",
+								"type": "(...args: any[]) => void",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": true,
+						"returns": "Transport<SMTPSentMessageInfo, SMTPPoolOptions>",
+						"handle": "Transport",
+						"traits": [
+							"sync"
+						]
+					}
 				]
 			},
 			"properties": {
@@ -636,18 +711,6 @@
 				"version": {
 					"type": "string"
 				},
-				"verify": {
-					"type": "((...args: any[]) => any) | undefined"
-				},
-				"close": {
-					"type": "((...args: any[]) => any) | undefined"
-				},
-				"isIdle": {
-					"type": "((...args: any[]) => any) | undefined"
-				},
-				"on": {
-					"type": "((event: string | symbol, listener: (...args: any[]) => void) => Transport<SMTPSentMessageInfo, SMTPPoolOptions>) | undefined"
-				},
 				"mailer": {
 					"type": "Mail<SMTPSentMessageInfo, SMTPPoolOptions> | undefined"
 				},
@@ -656,7 +719,9 @@
 				}
 			},
 			"events": [],
-			"releases": []
+			"releases": [
+				"close"
+			]
 		},
 		"Logger": {
 			"name": "Logger",

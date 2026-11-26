@@ -173,8 +173,11 @@ export type EffectFunction<F, E, H extends HandleEntry> = [FunctionSignature<Ove
 	? UnionToIntersection<Overloads<F> extends (...args: infer A) => infer R ? (...args: Accepting<A, H>) => Resolved<R, E, H> : never>
 	: UnionToIntersection<FunctionSignature<Overloads<F>, E, H>>;
 
+/** The optional keys of `T`. */
+type OptionalKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T];
+
 /** The keys of `T` whose value is a function. */
-export type MethodKeys<T> = { [K in keyof T]-?: T[K] extends (...args: never) => unknown ? K : never }[keyof T] & string;
+export type MethodKeys<T> = { [K in keyof T]-?: NonNullable<T[K]> extends (...args: never) => unknown ? K : never }[keyof T] & string;
 
 /**
  * A handle's facade: each method `K` of `T` in facade form, and the upstream object. `K` is the generator's list of
@@ -188,7 +191,10 @@ export type Effectified<
 	P extends keyof T = never,
 	C extends K = never,
 > = {
-	readonly [M in Exclude<K, C>]: EffectMethod<T[M], E, H>;
+	readonly [M in Exclude<K, C | OptionalKeys<T>>]: EffectMethod<T[M], E, H>;
+} & {
+	// An optional upstream method (`refresh?(): Promise<void>`) is optional in the facade, which leaves it out too.
+	readonly [M in Exclude<K, C> & OptionalKeys<T>]?: EffectMethod<NonNullable<T[M]>, E, H>;
 } & { readonly [M in C]: CallbackMethod<T[M], E, H> } & { readonly [Q in P]: Lift<T[Q], H> } & { readonly upstream: T };
 
 /** The methods of `T` with an overload that returns a promise (or any thenable). */

@@ -87,6 +87,16 @@ describe("types", () => {
 		expectTypeOf(client().name()).toEqualTypeOf<string>();
 	});
 
+	it("keeps an optional method optional", () => {
+		interface Provider {
+			name(): string;
+			refresh?(): Promise<number>;
+		}
+		type Facade = Effectified<Provider, TestError, never>;
+		expectTypeOf<Facade["refresh"]>().toEqualTypeOf<(() => Effect.Effect<number, TestError>) | undefined>();
+		expectTypeOf<Facade["name"]>().toEqualTypeOf<() => string>();
+	});
+
 	it("turns async iterables into streams", () => {
 		expectTypeOf<ReturnType<ConnectionFacade["rows"]>>().toEqualTypeOf<Stream.Stream<number, TestError>>();
 	});

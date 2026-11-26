@@ -168,8 +168,13 @@ class SurfaceReader {
 			if (!this.isTargetDeclaration(property) || !this.isPublic(property)) continue;
 			const propertyType = this.checker.getTypeOfSymbol(property);
 			if (propertyType === undefined) continue;
-			const signatures = this.checker.getSignaturesOfType(propertyType, SignatureKind.Call);
-			const via = `${typeRef}[${JSON.stringify(property.name)}]`;
+			// An optional method (`refresh?(): Promise<void>`) is a method too, its type `F | undefined`. An optional field
+			// holding a function (`onclose?: () => void`) is a slot the program fills: it stays a property.
+			const optional = (property.flags & SymbolFlags.Optional) !== 0;
+			const callable = optional && property.declarations.every((declaration) => declaration.kind === SyntaxKind.MethodSignature || declaration.kind === SyntaxKind.MethodDeclaration);
+			const signatures = this.checker.getSignaturesOfType(callable ? (this.checker.getNonNullableType(propertyType) ?? propertyType) : propertyType, SignatureKind.Call);
+			const member = `${typeRef}[${JSON.stringify(property.name)}]`;
+			const via = callable ? `NonNullable<${member}>` : member;
 			if (signatures.length === 0) {
 				const handle = this.handleOf(propertyType, via, depth + 1);
 				properties[property.name] = { type: this.print(propertyType).slice(0, 300), ...(handle === undefined ? {} : { handle }) };
@@ -178,7 +183,10 @@ class SurfaceReader {
 			methods[property.name] = signatures.map((signature) => this.readSignature(signature, via, depth + 1));
 			if (property.name === "on") events = this.eventNames(signatures);
 		}
-		return { name, typeRef, methods, properties, events, releases: Object.keys(methods).filter((method) => RELEASE_NAMES.has(method)) };
+		// `end` finishes what a producer writes (a stream's `push`/`write`, an iterable's last value): it releases nothing.
+		const producer = "push" in methods || "write" in methods || this.isAsyncIterable(type);
+		const releases = Object.keys(methods).filter((method) => RELEASE_NAMES.has(method) && !(method === "end" && producer));
+		return { name, typeRef, methods, properties, events, releases };
 	}
 
 	/** A signature with its traits; a handle it produces is queued for reading. */

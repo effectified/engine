@@ -8253,6 +8253,16 @@
 							"sync"
 						]
 					}
+				],
+				"nodes": [
+					{
+						"parameters": [],
+						"trailingCallback": false,
+						"returns": "IRedisClient[]",
+						"traits": [
+							"sync"
+						]
+					}
 				]
 			},
 			"properties": {
@@ -8264,9 +8274,6 @@
 				},
 				"options": {
 					"type": "Record<string, any>"
-				},
-				"nodes": {
-					"type": "(() => IRedisClient[]) | undefined"
 				}
 			},
 			"events": [],
