@@ -6,7 +6,7 @@ import { FetchHttpClient } from "effect/http";
 import { drift, driftMarkdown } from "./drift.ts";
 import { plan, planMarkdown } from "./plan.ts";
 import { usages, usagesMarkdown } from "./usages.ts";
-import { build, draft, listTargets, reconcile, release, study, sync, targetFiles, test, verify } from "./pipeline.ts";
+import { build, draft, isReleased, listTargets, reconcile, release, study, sync, targetFiles, test, verify } from "./pipeline.ts";
 import { decodeRecipe } from "./recipe.ts";
 import { decodeSurface } from "./surface.ts";
 import type { Recipe } from "./recipe.ts";
@@ -135,13 +135,27 @@ const usagesCommand = Command.make(
 		}),
 ).pipe(Command.withDescription("List where an application uses a library, as a checklist for moving it onto the facade"));
 
-const releaseCommand = Command.make("release", { packageName, out }, ({ packageName, out }) =>
-	Effect.gen(function* () {
-		const files = yield* targetFiles(out, packageName);
-		const released = yield* release(files, process.cwd());
-		yield* Console.log(`released ${released.tag}: ${released.url}`);
-	}),
-).pipe(Command.withDescription("Build, pack and release a facade on GitHub (from a clean, pushed tree)"));
+const releaseCommand = Command.make(
+	"release",
+	{
+		packageName: Argument.String("package").pipe(
+			Argument.withDescription("A target's npm name; every target whose version is not released yet when left out"),
+			Argument.optional,
+		),
+		out,
+	},
+	({ packageName, out }) =>
+		Effect.gen(function* () {
+			const names = Option.isSome(packageName) ? [packageName.value] : yield* listTargets(out);
+			for (const name of names) {
+				const files = yield* targetFiles(out, name);
+				// Without a name, a released version is skipped: a release is never replaced, and CI runs this on every push.
+				if (Option.isNone(packageName) && (yield* isReleased(files, process.cwd()))) continue;
+				const released = yield* release(files, process.cwd());
+				yield* Console.log(`released ${released.tag}: ${released.url}`);
+			}
+		}),
+).pipe(Command.withDescription("Build, pack and release facades on GitHub (from a clean, pushed tree)"));
 
 const makeCommand = Command.make("make", { target, cache, out, ui }, ({ target, cache, out, ui }) =>
 	Effect.gen(function* () {

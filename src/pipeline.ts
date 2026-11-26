@@ -161,6 +161,13 @@ export const test = Effect.fn("test")(function* (files: TargetFiles) {
  * Releases a facade on GitHub: builds it with TypeScript 7, packs it, and attaches the tarball to the release
  * `<name>-v<version>` of effectified/engine, made from a clean, pushed HEAD and never replaced.
  */
+/** Whether the facade's current version (`<name>-v<version>`) is released on effectified/engine. */
+export const isReleased = Effect.fn("isReleased")(function* (files: TargetFiles, root: string) {
+	const recipe = yield* readRecipe(files);
+	const tag = `${recipe.name.replace(/^@effectified\//, "")}-v${facadeVersion(recipe)}`;
+	return (yield* runCommand("gh", ["release", "view", tag, "--repo", "effectified/engine"], root)).exitCode === 0;
+});
+
 export const release = Effect.fn("release")(function* (files: TargetFiles, root: string) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
