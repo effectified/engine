@@ -24,7 +24,7 @@ export function uiFiles(surface: Surface, recipe: Recipe, header: (what: string)
 	if (ui === undefined) return new Map();
 	const elements = (surface.elements ?? []).filter((element) => recipe.methods[element.tag] !== "exclude");
 	const files = new Map<string, string>([
-		["package.json", packageJson(recipe, ui.effectUi)],
+		["package.json", packageJson(surface, recipe, ui.effectUi)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/internal/ui.ts", `${header("the Effect UI runtime of @effectified/engine, copied verbatim")}${runtime}`],
@@ -243,8 +243,8 @@ export const fixture = Effect.fn("fixture")(function* (name: string) {
 });
 `;
 
-function packageJson(recipe: Recipe, effectUi: string): string {
-	const dependencies: Record<string, string> = { [recipe.package]: recipe.version, ...recipe.ui?.dependencies };
+function packageJson(surface: Surface, recipe: Recipe, effectUi: string): string {
+	const dependencies: Record<string, string> = { ...surface.typeDependencies, [recipe.package]: recipe.version, ...recipe.ui?.dependencies };
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	const effectUiUrl = `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${effectUi}`;
 	return `${JSON.stringify(

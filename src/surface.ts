@@ -77,6 +77,11 @@ export const Surface = Schema.Struct({
 	typeExports: Schema.Array(Schema.String),
 	/** For a web-component library: the elements its Custom Elements Manifest declares. */
 	elements: Schema.optional(Schema.Array(Element)),
+	/**
+	 * Packages upstream's types refer to (`import("typed-query-selector/parser")` in a type the facade keeps), at the
+	 * range upstream depends on them: the facade's declarations name them too, so it depends on them.
+	 */
+	typeDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type Surface = typeof Surface.Type;
 

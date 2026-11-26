@@ -71,6 +71,11 @@ export const Recipe = Schema.Struct({
 	 */
 	derived: Schema.Array(Schema.String),
 	/**
+	 * Derived generic methods TypeScript cannot type through a call (`lifted`): type parameters whose defaults depend
+	 * on each other, say. `reconcile` writes them; they keep the derived type, their type parameters as constraints.
+	 */
+	unlifted: Schema.optional(Schema.Array(Schema.String)),
+	/**
 	 * A frontend facade for Effect UI: the snapshot of @effect/ui it builds against (a commit of Effect-TS/ui on
 	 * pkg.pr.new), the mounts it offers, each a module `src/mounts/<name>.ts` written by an agent or a person, and
 	 * the packages those mounts import besides upstream, at upstream's own range (`@codemirror/state`: a second copy

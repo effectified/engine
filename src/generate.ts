@@ -28,7 +28,7 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 	}
 	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
-		["package.json", packageJson(recipe)],
+		["package.json", packageJson(surface, recipe)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/index.ts", indexSource(surface, recipe)],
@@ -179,12 +179,24 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 	// Events, under one export keyed by handle: `<Handle>Events` would collide with handles named so (BullMQ's
 	// `QueueEvents`).
 	const emitters = Object.entries(recipe.handles).filter(([name, handleRecipe]) => handleRecipe.events.length > 0 && wrapped.includes(name));
+	const typedEmitters = emitters.filter(([name]) => keyedListeners(surface.handles[name]));
+	for (const [name] of typedEmitters) {
+		push(
+			`/** A ${name} to name its listeners' arguments by, through its own \`on<K>\`: types only, never read at run time. */`,
+			`declare const emitterOf${name}: ${surface.handles[name]?.typeRef ?? `Upstream.${name}`};`,
+			"",
+		);
+	}
 	if (emitters.length > 0) {
-		push("/** Events of the wrapped handles as Streams of each emission's arguments, listening for as long as the stream runs. */", "export const events = {");
+		push("/** Events of the wrapped handles as Streams of each emission's arguments, as upstream types them, listening for as long as the stream runs. */", "export const events = {");
 		for (const [name, handleRecipe] of emitters) {
+			const typed = typedEmitters.some(([typedName]) => typedName === name);
 			push(
 				`\t${name}: {`,
-				...handleRecipe.events.map((event) => `\t\t${memberName(event)}: (handle: ${name}) => Effectify.events(handle.upstream, ${JSON.stringify(event)}),`),
+				...handleRecipe.events.map((event) => {
+					const args = typed ? `<Parameters<Parameters<typeof emitterOf${name}.on<${JSON.stringify(event)}>>[1]>>` : "";
+					return `\t\t${memberName(event)}: (handle: ${name}) => Effectify.events${args}(handle.upstream, ${JSON.stringify(event)}),`;
+				}),
 				"\t},",
 			);
 		}
@@ -194,12 +206,36 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 }
 
 /**
+ * Whether a handle's `on` keys its listeners by its event's name (`on<U extends keyof Listeners>(event: U, listener:
+ * Listeners[U])`): then `typeof handle.on<"name">` names that event's listener exactly, whatever upstream exports.
+ */
+function keyedListeners(handle: Handle | undefined): boolean {
+	return (handle?.methods["on"] ?? []).some((signature) => {
+		const first = /^(\w+)\b/.exec(signature.typeParameters ?? "")?.[1];
+		return first !== undefined && signature.parameters[0]?.type === first && signature.parameters.length >= 2;
+	});
+}
+
+/**
  * A handle's facade interface. Its methods are derived from upstream's types, except generic ones: inference through
  * a mapped type cannot keep type parameters, so each is written out from upstream's own declaration (qualified with
  * `Upstream.`, its trailing callback left out), unless the recipe keeps it derived.
  */
 function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<string>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
 	const derived = `Effectify.Effectified<${handle.typeRef}, Failure, Handles, ${name}Methods, ${name}Properties>`;
+	// A generic method kept derived (its written-out signature names types upstream does not export) with one
+	// signature is lifted: typed through a call, which keeps its type parameters. Overloads would keep only the last.
+	const lifted = methods.filter((method) => {
+		const kept = (handle.methods[method] ?? []).filter((signature) => !signature.traits.includes("callback"));
+		return (
+			recipe.derived.includes(`${name}.${method}`) &&
+			!(recipe.unlifted ?? []).includes(`${name}.${method}`) &&
+			recipe.methods[`${name}.${method}`] === undefined &&
+			kept.length === 1 &&
+			kept[0]?.typeParameters !== undefined &&
+			!kept[0].traits.includes("stream")
+		);
+	});
 	const explicit = methods.filter((method) => {
 		const signatures = handle.methods[method] ?? [];
 		return (
@@ -210,15 +246,28 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 			signatures.some((signature) => !signature.traits.includes("callback"))
 		);
 	});
-	if (explicit.length === 0) return [`export interface ${name} extends ${derived} {}`];
+	if (explicit.length === 0 && lifted.length === 0) return [`export interface ${name} extends ${derived} {}`];
 	const qualify = qualifier(surface);
 	return [
-		`export interface ${name} extends Omit<${derived}, ${explicit.map((method) => JSON.stringify(method)).join(" | ")}> {`,
+		...(lifted.length === 0
+			? []
+			: [
+					`/** Types only: a ${name} whose generic methods \`lifted${name}\` types; neither is read at run time. */`,
+					`declare const instanceOf${name}: ${handle.typeRef};`,
+					`const lifted${name} = () => ({`,
+					...lifted.map(
+						(method) => `\t${memberName(method)}: Effectify.lifted<Failure, Handles>()(instanceOf${name}${propertyAccess(method)}), // lifted: ${name}.${method}`,
+					),
+					"});",
+					"",
+				]),
+		`export interface ${name} extends Omit<${derived}, ${[...explicit, ...lifted].map((method) => JSON.stringify(method)).join(" | ")}> {`,
 		...explicit.flatMap((method) =>
 			(handle.methods[method] ?? [])
 				.filter((signature) => !signature.traits.includes("callback"))
 				.map((signature) => `\t${memberName(method)}${explicitSignature(name, signature, qualify, "method")}; // explicit: ${name}.${method}`),
 		),
+		...lifted.map((method) => `\treadonly ${memberName(method)}: ReturnType<typeof lifted${name}>[${JSON.stringify(method)}]; // lifted: ${name}.${method}`),
 		"}",
 	];
 }
@@ -273,6 +322,11 @@ function typeParameterNames(list: string | undefined): ReadonlyArray<string> {
 		}
 	}
 	return names;
+}
+
+/** `.name`, or `["na-me"]` for a name that is no identifier. */
+function propertyAccess(name: string): string {
+	return /^[A-Za-z_$][\w$]*$/.test(name) ? `.${name}` : `[${JSON.stringify(name)}]`;
 }
 
 function memberName(method: string): string {
@@ -441,8 +495,8 @@ function lowerFirst(name: string): string {
 	return `${name.charAt(0).toLowerCase()}${name.slice(1)}`;
 }
 
-function packageJson(recipe: Recipe): string {
-	const dependencies: Record<string, string> = { [recipe.package]: recipe.version };
+function packageJson(surface: Surface, recipe: Recipe): string {
+	const dependencies: Record<string, string> = { ...surface.typeDependencies, [recipe.package]: recipe.version };
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	return `${JSON.stringify(
 		{

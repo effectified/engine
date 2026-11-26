@@ -74,8 +74,8 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 
 ## Known limits
 
-- A generic method whose exact signature names a type upstream does not export keeps the derived type, where its type parameters become their constraints (`recipe.derived` lists them).
-- Event payloads are `ReadonlyArray<unknown>` (the listener's arguments); typed payloads are next.
+- A generic method whose signature names a type upstream does not export is typed through a call (`Effectify.lifted`), which keeps its type parameters: puppeteer's `page.$eval("input#name", (input) => input.value)` is an `Effect<string>`. When TypeScript cannot infer through the call (type parameters whose defaults depend on each other, `recipe.unlifted`), the method keeps the derived type, its type parameters as their constraints. An overloaded generic method keeps its written-out overloads, or the derived type.
+- Event payloads are typed when the emitter keys its listeners by name (`on<U extends keyof Listeners>(event: U, listener: Listeners[U])`, as bullmq and puppeteer do): `events.Worker.completed(worker)` is a `Stream` of `[job, result, previous]`. Other emitters give `ReadonlyArray<unknown>`.
 - Callback-only APIs (no promise overload) are left out of the facade; `.upstream` reaches them.
 - Facades are released on GitHub, not npm: `node src/bin.ts release <name>` publishes `<name>-v<version>` from this repository (a facade's version is its upstream's).
 

@@ -12,7 +12,7 @@ import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, type Rec
 import { type Scan, scan } from "./scan.ts";
 import { decodeSurface, type Surface } from "./surface.ts";
 import { resolveTarget } from "./target.ts";
-import { prepareWorkspace } from "./workspace.ts";
+import { prepareWorkspace, type Workspace } from "./workspace.ts";
 
 /** A target's directory and the files the steps keep in it. */
 export interface TargetFiles {
@@ -47,7 +47,9 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 	const workspace = yield* prepareWorkspace(target, cache);
 	const analyzed = yield* analyze(workspace);
 	const manifest = yield* manifestPath(workspace);
-	const surface = manifest === undefined ? analyzed : { ...analyzed, elements: yield* readElements(workspace, manifest) };
+	const withElements = manifest === undefined ? analyzed : { ...analyzed, elements: yield* readElements(workspace, manifest) };
+	const typeDependencies = yield* referencedPackages(workspace);
+	const surface = Object.keys(typeDependencies).length === 0 ? withElements : { ...withElements, typeDependencies };
 	const found = yield* scan(workspace);
 	const files = yield* targetFiles(out, target.package);
 	const readme = yield* fs.readFileString(path.join(workspace.packageDirectory, "README.md")).pipe(Effect.orElseSucceed(() => ""));
@@ -55,6 +57,37 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 	yield* fs.writeFileString(files.surface, json(surface));
 	yield* fs.writeFileString(files.scan, json(found));
 	return { surface, scan: found, readme, files, workspace };
+});
+
+/**
+ * The packages upstream's declarations import (`typed-query-selector/parser` in puppeteer's `.d.ts`), with the range
+ * upstream depends on each: the facade's own declarations name them when it keeps an upstream type that refers to
+ * one, so it declares them too, or a strict install (pnpm) could not resolve them.
+ */
+const referencedPackages = Effect.fn("referencedPackages")(function* (workspace: Workspace) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	// Trust boundary: upstream's package.json, read as untyped JSON.
+	const manifest: unknown = JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json")));
+	const ranges = (key: string): Record<string, unknown> => {
+		const value = typeof manifest === "object" && manifest !== null ? (manifest as Record<string, unknown>)[key] : undefined;
+		return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+	};
+	// Dependencies only: they are installed with upstream anyway; a peer may be optional (bullmq's `redis`).
+	const declared = ranges("dependencies");
+	const found: Record<string, string> = {};
+	const files = (yield* fs.readDirectory(workspace.packageDirectory, { recursive: true })).filter(
+		(file) => file.endsWith(".d.ts") && !file.split(path.sep).includes("node_modules"),
+	);
+	for (const file of files) {
+		const text = yield* fs.readFileString(path.join(workspace.packageDirectory, file));
+		for (const match of text.matchAll(/(?:from\s+|import\(\s*)["']((?:@[^/"']+\/)?[^./"'][^/"']*)/g)) {
+			const name = match[1] ?? "";
+			const range = declared[name];
+			if (typeof range === "string") found[name] = range;
+		}
+	}
+	return Object.fromEntries(Object.entries(found).sort(([a], [b]) => a.localeCompare(b)));
 });
 
 /** Drafts the recipe into `recipe.json`, keeping every decision an agent or a person made in the one already there. */
@@ -112,17 +145,24 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 		const rejected = rejectedMarkers(check.output, (file) => sources.get(file) ?? "");
 		// A generic signature or an element's type that names what upstream does not declare falls back to derived
 		// (untyped) types; a property upstream's element type does not have is left out.
-		const derived = rejected.filter((item) => item.marker !== "property" && !kept.includes(item.key)).map((item) => item.key);
+		const derived = rejected.filter((item) => (item.marker === "explicit" || item.marker === "element") && !kept.includes(item.key)).map((item) => item.key);
+		// A derived generic method TypeScript cannot type through a call keeps its derived type.
+		const unlifted = rejected.filter((item) => item.marker === "lifted" && !kept.includes(`lifted:${item.key}`)).map((item) => item.key);
 		const excluded = rejected.filter((item) => item.marker === "property").map((item) => [item.key, "exclude" as MethodOverride] as const);
 		// An override already tried once means the spec and the types disagree in a way overrides cannot settle.
 		const found = [...Object.entries(overridesFrom(check.output)), ...excluded].filter(([key]) => decided[key] === undefined);
-		if (found.length === 0 && derived.length === 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
+		if (found.length === 0 && derived.length === 0 && unlifted.length === 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
 		const recipe = yield* readRecipe(files);
 		for (const [key, value] of found) decided[key] = value;
-		kept.push(...derived);
+		kept.push(...derived, ...unlifted.map((key) => `lifted:${key}`));
 		yield* fs.writeFileString(
 			files.recipe,
-			json({ ...recipe, methods: { ...recipe.methods, ...Object.fromEntries(found) }, derived: [...new Set([...recipe.derived, ...derived])].sort() }),
+			json({
+				...recipe,
+				methods: { ...recipe.methods, ...Object.fromEntries(found) },
+				derived: [...new Set([...recipe.derived, ...derived])].sort(),
+				...(unlifted.length === 0 ? {} : { unlifted: [...new Set([...(recipe.unlifted ?? []), ...unlifted])].sort() }),
+			}),
 		);
 		yield* build(files);
 	}
@@ -237,9 +277,9 @@ export const listTargets = Effect.fn("listTargets")(function* (out: string) {
 	return names.sort();
 });
 
-/** What the compiler rejected on a line the generator marked: `// explicit: X`, `// property: X`, `// element: X`. */
+/** What the compiler rejected on a line the generator marked: `// explicit: X`, `// lifted: X`, `// property: X`, `// element: X`. */
 export interface Rejected {
-	readonly marker: "explicit" | "property" | "element";
+	readonly marker: "explicit" | "lifted" | "property" | "element";
 	readonly key: string;
 }
 
@@ -248,7 +288,7 @@ export function rejectedMarkers(diagnostics: string, read: (file: string) => str
 	const found = new Map<string, Rejected>();
 	for (const [, file, line] of diagnostics.matchAll(/^([\w./-]+\.ts)\((\d+),\d+\): error/gm)) {
 		if (file === undefined) continue;
-		const marked = /\/\/ (explicit|property|element): (\S+)$/.exec(read(file).split("\n")[Number(line) - 1] ?? "");
+		const marked = /\/\/ (explicit|lifted|property|element): (\S+)$/.exec(read(file).split("\n")[Number(line) - 1] ?? "");
 		if (marked !== null) found.set(`${marked[1]}:${marked[2]}`, { marker: marked[1] as Rejected["marker"], key: marked[2] ?? "" });
 	}
 	return [...found.values()];
