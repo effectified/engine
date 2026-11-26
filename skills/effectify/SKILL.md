@@ -59,6 +59,8 @@ node src/bin.ts test <name>        # every facade test passes (services up: see 
 pnpm check && pnpm test            # the engine itself, including the golden regeneration of every target
 ```
 
+Once merged and pushed, `node src/bin.ts release <name>` publishes the facade as the GitHub release `<name>-v<version>` (its version is upstream's).
+
 Then commit `targets/<name>/` (surface, scan, recipe, package without node_modules, DRIFT.md if any, USAGE.md) and say what remains: decisions you were unsure of, methods excluded and why, tests skipped for lack of a service.
 
 ## Rules

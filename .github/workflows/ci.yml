@@ -57,3 +57,6 @@ jobs:
         run: git diff --exit-code -- targets/${{ matrix.target }}
       - name: Behaviour tests against the real library
         run: node src/bin.ts test ${{ matrix.target }}
+      - name: The release build compiles
+        working-directory: targets/${{ matrix.target }}/package
+        run: node node_modules/typescript/bin/tsc -p tsconfig.build.json

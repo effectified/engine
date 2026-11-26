@@ -442,7 +442,8 @@ function packageJson(recipe: Recipe): string {
 	return `${JSON.stringify(
 		{
 			name: recipe.name,
-			version: "0.1.0",
+			// A facade's version is its upstream's: @effectified/sharp@0.35.5 wraps sharp@0.35.5.
+			version: recipe.version,
 			description: `${recipe.package} in Effect: its async calls as Effects, its iterables as Streams, its resources scoped, its failures tagged`,
 			type: "module",
 			license: "MIT",
@@ -514,5 +515,21 @@ function readme(surface: Surface, recipe: Recipe): string {
 		"",
 		`Offered: ${recipe.exports.map((name) => `\`${name}\``).join(", ")}. Types: ${surface.types.from === "bundled" ? "bundled with the package" : `\`${surface.types.package}\``}.`,
 		"",
+		"## Install",
+		"",
+		"Released on GitHub, not npm:",
+		"",
+		"```sh",
+		`npm install --allow-remote=root ${releaseUrl(recipe)} effect`,
+		`pnpm add ${releaseUrl(recipe)} effect`,
+		`bun add ${releaseUrl(recipe)} effect`,
+		"```",
+		"",
 	].join("\n");
+}
+
+/** Where `effectify release` publishes a facade: a release of effectified/engine tagged `<name>-v<version>`. */
+export function releaseUrl(recipe: Recipe): string {
+	const name = recipe.name.replace(/^@effectified\//, "");
+	return `https://github.com/effectified/engine/releases/download/${name}-v${recipe.version}/effectified-${name}-${recipe.version}.tgz`;
 }

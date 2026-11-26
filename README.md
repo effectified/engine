@@ -43,7 +43,7 @@ const program = Effect.scoped(
 | **sync** | Every day (`.github/workflows/sync.yml`): a newer upstream version is studied, its **drift** written (`DRIFT.md`: added, removed, changed, breaking or not), the recipe redrafted, the facade regenerated, type checked and tested, and a pull request opened. | `drift`, `sync` |
 | **usages** | Lists where an application uses a library, as a checklist for moving it onto the facade. | ast-grep |
 
-Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `test`, `plan`, `drift`, `sync`, `usages`; `make` runs the first five.
+Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `test`, `plan`, `drift`, `sync`, `usages`, `release`; `make` runs the first five.
 
 ## Targets
 
@@ -76,7 +76,7 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 - A generic method whose exact signature names a type upstream does not export keeps the derived type, where its type parameters become their constraints (`recipe.derived` lists them).
 - Event payloads are `ReadonlyArray<unknown>` (the listener's arguments); typed payloads are next.
 - Callback-only APIs (no promise overload) are left out of the facade; `.upstream` reaches them.
-- Facades live in this repository's `targets/` until each family gets its own repository and GitHub release.
+- Facades are released on GitHub, not npm: `node src/bin.ts release <name>` publishes `<name>-v<version>` from this repository (a facade's version is its upstream's).
 
 ## Develop
 

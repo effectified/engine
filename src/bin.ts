@@ -6,7 +6,7 @@ import { FetchHttpClient } from "effect/http";
 import { drift, driftMarkdown } from "./drift.ts";
 import { plan, planMarkdown } from "./plan.ts";
 import { usages, usagesMarkdown } from "./usages.ts";
-import { build, draft, listTargets, reconcile, study, sync, targetFiles, test, verify } from "./pipeline.ts";
+import { build, draft, listTargets, reconcile, release, study, sync, targetFiles, test, verify } from "./pipeline.ts";
 import { decodeRecipe } from "./recipe.ts";
 import { decodeSurface } from "./surface.ts";
 import type { Recipe } from "./recipe.ts";
@@ -134,6 +134,14 @@ const usagesCommand = Command.make(
 		}),
 ).pipe(Command.withDescription("List where an application uses a library, as a checklist for moving it onto the facade"));
 
+const releaseCommand = Command.make("release", { packageName, out }, ({ packageName, out }) =>
+	Effect.gen(function* () {
+		const files = yield* targetFiles(out, packageName);
+		const released = yield* release(files, process.cwd());
+		yield* Console.log(`released ${released.tag}: ${released.url}`);
+	}),
+).pipe(Command.withDescription("Build, pack and release a facade on GitHub (from a clean, pushed tree)"));
+
 const makeCommand = Command.make("make", { target, cache, out }, ({ target, cache, out }) =>
 	Effect.gen(function* () {
 		const studied = yield* study(target, cache, out);
@@ -183,6 +191,7 @@ const effectify = Command.make("effectify").pipe(
 		syncCommand,
 		planCommand,
 		usagesCommand,
+		releaseCommand,
 	]),
 );
 
