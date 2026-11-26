@@ -61,7 +61,8 @@ export const Recipe = Schema.Struct({
 	services: Schema.Array(Schema.Struct({ name: Schema.String, handle: Schema.String, acquire: Schema.String })),
 	/**
 	 * Per-method overrides by `<Handle>.<method>`. `reconcile` writes those the compiler demands (where upstream's
-	 * types and the analyzer read a method differently); an agent or a person may add `exclude`s.
+	 * types and the analyzer read a method differently); an agent or a person may add `exclude`s. A frontend
+	 * facade excludes an element by `<tag>`, a property by `<tag>.<property>` and an event by `<tag>@<event>`.
 	 */
 	methods: Schema.Record(Schema.String, MethodOverride),
 	/**
@@ -71,9 +72,17 @@ export const Recipe = Schema.Struct({
 	derived: Schema.Array(Schema.String),
 	/**
 	 * A frontend facade for Effect UI: the snapshot of @effect/ui it builds against (a commit of Effect-TS/ui on
-	 * pkg.pr.new), and the mounts it offers, each a module `src/mounts/<name>.ts` written by an agent or a person.
+	 * pkg.pr.new), the mounts it offers, each a module `src/mounts/<name>.ts` written by an agent or a person, and
+	 * the packages those mounts import besides upstream, at upstream's own range (`@codemirror/state`: a second copy
+	 * of it would reject the editor's extensions).
 	 */
-	ui: Schema.optional(Schema.Struct({ effectUi: Schema.String, mounts: Schema.Array(Schema.String) })),
+	ui: Schema.optional(
+		Schema.Struct({
+			effectUi: Schema.String,
+			mounts: Schema.Array(Schema.String),
+			dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+		}),
+	),
 	/**
 	 * The facade's revision for this upstream version, from 1. A facade's version is its upstream's; a fixed facade
 	 * of the same upstream is released as `<version>+<revision>`, since a release is never replaced.
@@ -97,7 +106,7 @@ export const decodeRecipe = Schema.decodeUnknownEffect(Schema.fromJsonString(Rec
 export const EFFECT_UI = "2fd1a57";
 
 /** Release methods in the order the draft prefers them. */
-const RELEASE_PREFERENCE = ["close", "quit", "disconnect", "destroy", "shutdown", "terminate", "stop", "end", "dispose", "release"];
+const RELEASE_PREFERENCE = ["close", "quit", "disconnect", "destroy", "remove", "shutdown", "terminate", "stop", "end", "dispose", "release"];
 
 /** Drafts a recipe from a surface, the scan and the package README; keeps the decisions of `previous` not made by the engine. */
 export const draftRecipe = Effect.fn("draftRecipe")(function* (
@@ -115,7 +124,9 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		return prior?.answer ?? answer;
 	};
 
-	const prefix = pascal(surface.package.replace(/^@[^/]+\//, "").replace(/-(core|js|node)$/, ""));
+	// A name and prefix once decided stay: a redraft (on `sync`) must not rename a released facade.
+	const name = previous?.name ?? facadeName(surface.package);
+	const prefix = previous?.prefix ?? pascal(name.slice("@effectified/".length).replace(/-(core|js|node)$/, ""));
 	// A web-component library, or one already made a frontend facade, is one for Effect UI.
 	const ui = previous?.ui ?? (surface.elements !== undefined || frontend ? { effectUi: EFFECT_UI, mounts: [] } : undefined);
 	const offered = offeredExports(surface, readme);
@@ -177,7 +188,7 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		package: surface.package,
 		version: surface.version,
 		types: surface.types,
-		name: `@effectified/${surface.package.replace(/^@[^/]+\//, "")}`,
+		name,
 		prefix,
 		exports,
 		handles,
@@ -266,6 +277,17 @@ function pascal(name: string): string {
 function dedupeBy<A>(items: ReadonlyArray<A>, key: (item: A) => string): ReadonlyArray<A> {
 	const seen = new Set<string>();
 	return items.filter((item) => !seen.has(key(item)) && seen.add(key(item)) !== undefined);
+}
+
+/**
+ * The facade's npm name: `@effectified/<package>`. A scoped package keeps its scope (`@codemirror/view` is
+ * `codemirror-view`), since other scopes publish the same names, unless its name already says it (`@xterm/xterm`).
+ */
+function facadeName(pkg: string): string {
+	const scoped = /^@([^/]+)\/(.+)$/.exec(pkg);
+	if (scoped === null) return `@effectified/${pkg}`;
+	const [, scope = "", name = ""] = scoped;
+	return `@effectified/${name === scope || name.startsWith(`${scope}-`) ? name : `${scope}-${name}`}`;
 }
 
 /** A service's name: `<Prefix><Handle>`, or `<Handle>Service` when the handle already carries the prefix. */

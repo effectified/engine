@@ -41,6 +41,9 @@ export const ChartMount = instanceMount(
 - **create** gets the committed element and the first args. **release** is upstream's own teardown (`destroy`, `dispose`, `remove`); it runs when the element leaves the view.
 - **update** applies new args to the live instance when upstream can (set data, dispatch a transaction, `setStyle`), so state the view does not own (scroll, selection, camera, animation) survives. Leave it out only when upstream has no way to update in place: the instance is then released and created again on every change.
 - **events** subscribes to upstream's callbacks or listeners, `emit`s plain data (indices, values, never upstream objects that hold the instance), and returns the unsubscribe. A view maps it to its messages with `Mount.map`.
+- `create` is called with the first args, and `update` only with args that differ from the ones the instance holds.
+- Packages the mount imports besides upstream go in `recipe.ui.dependencies`, at upstream's own range (CodeMirror's `@codemirror/state`: a second copy would reject the editor's extensions), with a decision.
+- A mount may import its library's stylesheet (`import "@xterm/xterm/css/xterm.css"`) when the library lays itself out with it; say so in a comment. A library that loads a worker from beside its own module (MapLibre) needs the app to set the worker's URL under a bundler: the fixture does it and the README says so.
 - Register it: add the mount's name to `recipe.ui.mounts`, with a decision (`by: "agent"`) saying what the instance is bound to and how it updates. `reconcile` adds it to the index.
 - Register upstream's plug-ins in the mount's module when a config can name any of them (`Chart.register(...registerables)`), and say so in a comment: it costs bundle size, and an app that wants less writes its own mount.
 
@@ -48,7 +51,7 @@ export const ChartMount = instanceMount(
 
 Bindings are generated; judgment goes into the recipe and the tests.
 
-- A property or element the binding should not offer goes in `recipe.methods` as `"<tag>.<property>": "exclude"` (or `"<tag>": "exclude"`), with a decision.
+- An element, property or event the binding should not offer goes in `recipe.methods` as `"<tag>": "exclude"`, `"<tag>.<property>": "exclude"` or `"<tag>@<event>": "exclude"` (a manifest that recorded a variable's name as an event), with a decision. The engine reads members and events through each element's superclasses and mixins in the manifest, and names each definition module through the package's `exports`.
 - A tag missing from upstream's `HTMLElementTagNameMap` is typed `Record<string, unknown>` and listed in `recipe.derived`: report it, since upstream should declare it.
 - Native `input` and `change` on a custom element are typed `never` by Effect UI: its payload reads only `value`. Use the generated `<Name>Changes` mount, which reports the element's own state (`value`, `checked`, ...) typed by upstream: `Input(h).onMount(InputChanges({}).pipe(Mount.map(({ value }) => Message.ChangedName({ name: String(value ?? "") }))))`.
 - **Controlled state syncs on the event that says it is done.** An element that animates open or closed fires a request event first (`wa-hide`) and a completion event after (`wa-after-hide`). Set the Model from the completion event: setting `open` to false while the element is still closing is a second request to close, and the request event fires again.

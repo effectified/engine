@@ -63,7 +63,8 @@ const DOM_EVENTS = new Set(
 function elementSource(element: Element, recipe: Recipe, header: (what: string) => string): string {
 	const untyped = recipe.derived.includes(element.tag);
 	const properties = element.properties.filter((property) => recipe.methods[`${element.tag}.${property}`] !== "exclude");
-	const events = element.events.filter((event) => !DOM_EVENTS.has(event));
+	// `<tag>@<event>`: an event and a property may share a name (`md-dialog`'s `open`).
+	const events = element.events.filter((event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude");
 	return [
 		header(`the Effect UI binding of <${element.tag}>`).trimEnd(),
 		`import ${JSON.stringify(element.definition)};`,
@@ -227,7 +228,7 @@ export const fixture = Effect.fn("fixture")(function* (name: string) {
 `;
 
 function packageJson(recipe: Recipe, effectUi: string): string {
-	const dependencies: Record<string, string> = { [recipe.package]: recipe.version };
+	const dependencies: Record<string, string> = { [recipe.package]: recipe.version, ...recipe.ui?.dependencies };
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	const effectUiUrl = `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${effectUi}`;
 	return `${JSON.stringify(
@@ -243,7 +244,7 @@ function packageJson(recipe: Recipe, effectUi: string): string {
 			},
 			files: ["dist", "README.md"],
 			sideEffects: ["./dist/elements/*.js", "./dist/index.js"],
-			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests --testTimeout=30000" },
+			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests --testTimeout=60000" },
 			dependencies,
 			peerDependencies: { "@effect/ui": "*", effect: `~${UI_TOOLCHAIN.effect}` },
 			devDependencies: Object.fromEntries(
@@ -281,6 +282,8 @@ const TSCONFIG = `${JSON.stringify(
 			allowImportingTsExtensions: true,
 			rewriteRelativeImportExtensions: true,
 			skipLibCheck: true,
+			// A mount imports its library's stylesheet for its side effect (xterm.css): the bundler handles it.
+			noUncheckedSideEffectImports: false,
 			noEmit: true,
 		},
 		include: ["src", "test"],

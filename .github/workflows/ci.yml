@@ -34,7 +34,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [bullmq, nodemailer, puppeteer-core, sharp, simple-git, awesome.me__webawesome, chart.js, emoji-picker-element]
+        target:
+          [bullmq, nodemailer, puppeteer-core, sharp, simple-git, awesome.me__webawesome, chart.js, codemirror__view, emoji-picker-element, fluentui__web-components, maplibre-gl, material__web, media-chrome, motion, xterm__xterm]
     services:
       redis:
         image: redis:7-alpine

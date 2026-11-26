@@ -73,6 +73,13 @@ export const build = Effect.fn("build")(function* (files: TargetFiles) {
 	const recipe = yield* readRecipe(files);
 	const generated = yield* generate(surface, recipe);
 	yield* writeFiles(generated, files.package);
+	// Bindings are all generated: one the recipe no longer offers would still ship and be importable.
+	const elements = `${files.package}/src/elements`;
+	if (yield* fs.exists(elements)) {
+		for (const file of yield* fs.readDirectory(elements)) {
+			if (!generated.has(`src/elements/${file}`)) yield* fs.remove(`${elements}/${file}`);
+		}
+	}
 	return { surface, recipe, files: generated };
 });
 
