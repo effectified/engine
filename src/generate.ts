@@ -260,6 +260,7 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 	});
 	if (explicit.length === 0 && lifted.length === 0) return [`export interface ${name} extends ${derived} {}`];
 	const qualify = qualifier(surface);
+	const accept = accepting(surface, recipe);
 	return [
 		...(lifted.length === 0
 			? []
@@ -277,7 +278,7 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 		...explicit.flatMap((method) =>
 			(handle.methods[method] ?? [])
 				.filter((signature) => !signature.traits.includes("callback"))
-				.map((signature) => `\t${memberName(method)}${explicitSignature(name, signature, qualify, "method")}; // explicit: ${name}.${method}`),
+				.map((signature) => `\t${memberName(method)}${explicitSignature(name, signature, qualify, accept, "method")}; // explicit: ${name}.${method}`),
 		),
 		...lifted.map((method) => `\treadonly ${memberName(method)}: ReturnType<typeof ${liftedName(name, method)}>; // lifted: ${name}.${method}`),
 		"}",
@@ -294,12 +295,13 @@ function explicitSignature(
 	handle: string,
 	signature: Signature,
 	qualify: (type: string, local: ReadonlyArray<string>) => string,
+	accept: (type: string) => string,
 	mode: "method" | "export",
 ): string {
 	const local = typeParameterNames(signature.typeParameters);
 	const parameters = signature.trailingCallback && signature.parameters.at(-1)?.optional ? signature.parameters.slice(0, -1) : signature.parameters;
 	const list = parameters
-		.map((parameter) => `${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional && !parameter.rest ? "?" : ""}: ${qualify(parameter.type, local)}`)
+		.map((parameter) => `${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional && !parameter.rest ? "?" : ""}: ${accept(qualify(parameter.type, local))}`)
 		.join(", ");
 	const result = signature.traits.includes("async")
 		? `Effectify.Resolved<${qualify(signature.resolves ?? "unknown", local)}, Failure, Handles>`
@@ -311,6 +313,19 @@ function explicitSignature(
 				? handle
 				: `Effectify.Lift<${qualify(signature.returns, local)}, Handles>`;
 	return `${signature.typeParameters === undefined ? "" : `<${qualify(signature.typeParameters, local)}>`}(${list}): ${result}`;
+}
+
+/**
+ * A written-out parameter type as a facade takes it: `Effectify.Accepts<T, Handles>` when it names a wrapped handle
+ * (a facade of it is taken too), else as it is, so the inference of a type parameter a parameter carries is untouched.
+ */
+function accepting(surface: Surface, recipe: Recipe): (type: string) => string {
+	const names = Object.keys(recipe.handles)
+		.flatMap((name) => /^Upstream\.([\w$]+)/.exec(surface.handles[name]?.typeRef ?? "")?.[1] ?? [])
+		.sort((a, b) => b.length - a.length);
+	if (names.length === 0) return (type) => type;
+	const pattern = new RegExp(String.raw`\bUpstream\.(${names.map(escape).join("|")})\b(?![\w$])`);
+	return (type) => (pattern.test(type) ? `Effectify.Accepts<${type}, Handles>` : type);
 }
 
 /** Qualifies the names a type text takes from upstream's exports with `Upstream.`; a type parameter shadows them. */
@@ -363,6 +378,7 @@ function escape(name: string): string {
 function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
 	const facadeName = item.name === "default" ? lowerFirst(recipe.prefix) : item.name;
 	const qualify = qualifier(surface);
+	const accept = accepting(surface, recipe);
 	if (item.kind === "function") {
 		const into = producedHandle(item.signatures, recipe);
 		const kind = into === undefined ? "undefined" : `kinds.${into}`;
@@ -373,7 +389,7 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 			return [
 				doc,
 				`export const ${facadeName} = Effectify.entryAs<{`,
-				...kept.map((signature) => `\t${explicitSignature(facadeName, signature, qualify, "export")}; // explicit: ${item.name}`),
+				...kept.map((signature) => `\t${explicitSignature(facadeName, signature, qualify, accept, "export")}; // explicit: ${item.name}`),
 				`}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 			];
 		}
@@ -397,7 +413,7 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 				doc,
 				`export const make${item.name} = Effectify.constructAs<{`,
 				...item.constructors.map(
-					(signature) => `\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, "export")}; // explicit: ${item.name}`,
+					(signature) => `\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, accept, "export")}; // explicit: ${item.name}`,
 				),
 				`}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
 				...(statics.length === 0 ? [] : ["", ...statics]),
@@ -427,13 +443,14 @@ function staticsSource(item: Extract<Export, { kind: "class" }>, surface: Surfac
 		.sort(([a], [b]) => a.localeCompare(b));
 	if (offered.length === 0) return [];
 	const qualify = qualifier(surface);
+	const accept = accepting(surface, recipe);
 	// Each member's type, written as the object's annotation (see `exportSource`), then its value.
 	const members = offered.map(([name, kept]) => {
 		const key = `${item.name}.${name}`;
 		const into = producedHandle(kept, recipe);
 		const args = `Upstream.${item.name}${propertyAccess(name)}.bind(Upstream.${item.name}), ${JSON.stringify(key)}, ${into === undefined ? "undefined" : `kinds.${into}`}, kinds, classify${entryOptions(kept)}`;
 		if (isExplicit(key, kept, recipe)) {
-			const type = `{ ${kept.map((signature) => `${explicitSignature(item.name, signature, qualify, "export")};`).join(" ")} }`;
+			const type = `{ ${kept.map((signature) => `${explicitSignature(item.name, signature, qualify, accept, "export")};`).join(" ")} }`;
 			return { name, type, value: `Effectify.entryAs<Statics${item.name}[${JSON.stringify(name)}]>(${args})`, key, explicit: true };
 		}
 		const type = `Effectify.EffectFunction<typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles>`;

@@ -42,6 +42,17 @@ type IsAny<T> = 0 extends 1 & T ? true : false;
 
 type UnionToIntersection<U> = (U extends unknown ? (u: U) => void : never) extends (i: infer I) => void ? I : never;
 
+/**
+ * A parameter as a facade takes it: upstream's type, or the facade of any wrapped handle that type accepts (a
+ * `StdioTransport` where upstream takes any `McpTransport`). The runtime hands upstream the object a facade wraps.
+ */
+export type Accepts<P, H extends HandleEntry> = IsAny<P> extends true ? P : P | AcceptedFacade<P, H>;
+
+type AcceptedFacade<P, H extends HandleEntry> = H extends HandleEntry ? ([H[0]] extends [P] ? H[1] : never) : never;
+
+/** Every parameter of `A` as a facade takes it (`Accepts`); optional and rest parameters stay so. */
+export type Accepting<A extends ReadonlyArray<unknown>, H extends HandleEntry> = { [I in keyof A]: Accepts<A[I], H> };
+
 /** The facade of `V` when `H` lists it as a handle, else `V` itself. */
 export type Lift<V, H extends HandleEntry> = [HandleOf<V, H>] extends [never] ? V : HandleOf<V, H>[1];
 
@@ -77,7 +88,7 @@ export type Streamed<R, E> = R extends AsyncIterable<infer V> ? Stream.Stream<V,
 export type MethodSignature<F, E, H extends HandleEntry> = F extends (...args: infer A) => infer R
 	? IsCallbackStyle<A, R> extends true
 		? never
-		: (...args: A) => MethodResult<R, E, H>
+		: (...args: Accepting<A, H>) => MethodResult<R, E, H>
 	: never;
 
 /**
@@ -88,14 +99,14 @@ export type MethodSignature<F, E, H extends HandleEntry> = F extends (...args: i
  */
 export const lifted =
 	<E, H extends HandleEntry>() =>
-	<A extends ReadonlyArray<unknown>, R>(method: (...args: A) => R): ((...args: A) => MethodResult<R, E, H>) =>
+	<A extends ReadonlyArray<unknown>, R>(method: (...args: A) => R): ((...args: Accepting<A, H>) => MethodResult<R, E, H>) =>
 		method as never;
 
 /** One exported function in facade form: like a method, but a synchronous call becomes an `Effect` too (it may throw). */
 export type FunctionSignature<F, E, H extends HandleEntry> = F extends (...args: infer A) => infer R
 	? IsCallbackStyle<A, R> extends true
 		? never
-		: (...args: A) => IsAny<R> extends true
+		: (...args: Accepting<A, H>) => IsAny<R> extends true
 				? Effect.Effect<R, E>
 				: R extends PromiseLike<infer V>
 					? Resolved<V, E, H>
@@ -142,7 +153,7 @@ type CallbackSignature<F, E, H extends HandleEntry> = F extends (...args: infer 
 	? [R] extends [void]
 		? SplitLast<A> extends readonly [infer Init extends ReadonlyArray<unknown>, infer Last]
 			? NonNullable<Last> extends (...args: never) => unknown
-				? (...args: Init) => Resolved<CallbackValue<NonNullable<Last>>, E, H>
+				? (...args: Accepting<Init, H>) => Resolved<CallbackValue<NonNullable<Last>>, E, H>
 				: never
 			: never
 		: never
@@ -159,7 +170,7 @@ export type CallbackMethod<F, E, H extends HandleEntry> = UnionToIntersection<Ca
  * trailing callback and returns nothing takes it as an argument (a handler): its call is an `Effect` like any other.
  */
 export type EffectFunction<F, E, H extends HandleEntry> = [FunctionSignature<Overloads<F>, E, H>] extends [never]
-	? UnionToIntersection<Overloads<F> extends (...args: infer A) => infer R ? (...args: A) => Resolved<R, E, H> : never>
+	? UnionToIntersection<Overloads<F> extends (...args: infer A) => infer R ? (...args: Accepting<A, H>) => Resolved<R, E, H> : never>
 	: UnionToIntersection<FunctionSignature<Overloads<F>, E, H>>;
 
 /** The keys of `T` whose value is a function. */
@@ -253,11 +264,14 @@ export function effectify<T extends object, E>(
 	classify: Classify<E>,
 ): Effectified<T, E, HandleEntry> {
 	const facade: Record<string, unknown> = { upstream };
+	// Marks the object as a facade: handed back to upstream, it is replaced by `upstream` (see `unwrapped`).
+	Object.defineProperty(facade, FACADE, { value: upstream });
 	for (const key of kind.spec.methods) {
 		const operation = `${kind.name}.${key}`;
 		// Trust boundary: the generator lists `key` as a method of `T` and the facade's types check that it is one.
-		const method = (upstream as Record<string, (...args: ReadonlyArray<unknown>) => unknown>)[key];
-		if (method === undefined) continue;
+		const own = (upstream as Record<string, (...args: ReadonlyArray<unknown>) => unknown>)[key];
+		if (own === undefined) continue;
+		const method = (...args: ReadonlyArray<unknown>) => own.apply(upstream, unwrapped(args));
 		const returned = kind.spec.returns?.[key];
 		const into = returned === undefined ? undefined : kinds[returned];
 		const reports = kind.spec.callback?.[key];
@@ -270,7 +284,7 @@ export function effectify<T extends object, E>(
 								? (error: unknown, value: unknown) => resume(error === null || error === undefined ? Effect.succeed(value) : Effect.fail(classify(operation, error)))
 								: () => resume(Effect.void);
 						try {
-							method.apply(upstream, [...args, callback]);
+							method(...args, callback);
 						} catch (cause) {
 							resume(Effect.fail(classify(operation, cause)));
 						}
@@ -284,9 +298,10 @@ export function effectify<T extends object, E>(
 			facade[key] = (...args: Array<unknown>) =>
 				resolve(
 					// `Effect.tryPromise` makes, and aborts on interruption, a signal only for a function that takes one.
+					// `Promise.resolve`: an async method may also return its value as it is (`X | Promise<X>`).
 					slot === undefined
-						? () => method.apply(upstream, args) as PromiseLike<unknown>
-						: (signal: AbortSignal) => method.apply(upstream, withSignal(args, slot, signal)) as PromiseLike<unknown>,
+						? () => Promise.resolve(method(...args))
+						: (signal: AbortSignal) => Promise.resolve(method(...withSignal(args, slot, signal))),
 					operation,
 					into,
 					kinds,
@@ -295,11 +310,11 @@ export function effectify<T extends object, E>(
 		} else if (kind.spec.stream?.[key]) {
 			const slot = kind.spec.signal?.[key];
 			facade[key] = (...args: Array<unknown>) =>
-				iterate((signal) => method.apply(upstream, withSignal(args, slot, signal)) as AsyncIterable<unknown>, operation, classify);
+				iterate((signal) => method(...withSignal(args, slot, signal)) as AsyncIterable<unknown>, operation, classify);
 		} else if (into !== undefined) {
-			facade[key] = (...args: Array<unknown>) => wrap(method.apply(upstream, args), into, kinds, classify);
+			facade[key] = (...args: Array<unknown>) => wrap(method(...args), into, kinds, classify);
 		} else {
-			facade[key] = (...args: Array<unknown>) => method.apply(upstream, args);
+			facade[key] = (...args: Array<unknown>) => method(...args);
 		}
 	}
 	for (const [key, held] of Object.entries(kind.spec.properties ?? {})) {
@@ -331,7 +346,7 @@ export function entry<F extends (...args: never) => unknown, E, H extends Handle
 }
 
 /** A constructor in facade form, as `construct` returns it: the generator annotates exports with it, which names only `typeof Upstream.X`. */
-export type Construct<C extends abstract new (...args: never) => unknown, E, H extends HandleEntry> = (...args: ConstructorParameters<C>) => Resolved<InstanceType<C>, E, H>;
+export type Construct<C extends abstract new (...args: never) => unknown, E, H extends HandleEntry> = (...args: Accepting<ConstructorParameters<C>, H>) => Resolved<InstanceType<C>, E, H>;
 
 /** An exported class in facade form: constructing runs as an `Effect` of the instance's facade, scoped if releasable. */
 export function construct<C extends abstract new (...args: never) => unknown, E, H extends HandleEntry>(
@@ -387,8 +402,19 @@ function invoker<E>(
 	options: EntryOptions,
 ): (...args: Array<unknown>) => unknown {
 	const { signal: slot, stream } = options;
-	if (stream === true) return (...args) => iterate((signal) => invoke(...withSignal(args, slot, signal)) as AsyncIterable<unknown>, operation, classify);
-	return (...args) => call((signal) => invoke(...withSignal(args, slot, signal)), operation, into, kinds, classify);
+	if (stream === true) return (...args) => iterate((signal) => invoke(...withSignal(unwrapped(args), slot, signal)) as AsyncIterable<unknown>, operation, classify);
+	return (...args) => call((signal) => invoke(...withSignal(unwrapped(args), slot, signal)), operation, into, kinds, classify);
+}
+
+/**
+ * The key of a facade's upstream object, shared by every facade's copy of this runtime (`Symbol.for`): a facade of
+ * one package handed to another is unwrapped too.
+ */
+const FACADE = Symbol.for("@effectified/upstream");
+
+/** `args` with each facade replaced by the upstream object it wraps: upstream takes back only its own objects. */
+function unwrapped(args: ReadonlyArray<unknown>): Array<unknown> {
+	return args.map((arg) => (typeof arg === "object" && arg !== null && FACADE in arg ? (arg as Record<typeof FACADE, unknown>)[FACADE] : arg));
 }
 
 /** The fields every generated error has: the operation that failed, its message, the upstream code, and the cause. */

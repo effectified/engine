@@ -119,7 +119,7 @@ export interface Page extends Omit<Effectify.Effectified<Upstream.Page, Failure,
 	off<Key extends keyof Upstream.EventsWithWildcard<Upstream.PageEvents>>(type: Key): Effectify.Lift<Upstream.Page, Handles>; // explicit: Page.off
 	on<Key extends keyof Upstream.EventsWithWildcard<Upstream.PageEvents>>(type: Key, handler: (event: Upstream.EventsWithWildcard<Upstream.PageEvents>[Key], eventData: Key extends "*" ? unknown : never) => void): Effectify.Lift<Upstream.Page, Handles>; // explicit: Page.on
 	once<Key extends keyof Upstream.EventsWithWildcard<Upstream.PageEvents>>(type: Key, handler: (event: Upstream.EventsWithWildcard<Upstream.PageEvents>[Key], eventData: Key extends "*" ? unknown : never) => void): Effectify.Lift<Upstream.Page, Handles>; // explicit: Page.once
-	queryObjects<Prototype>(prototypeHandle: Upstream.JSHandle<Prototype>): Effectify.Resolved<Upstream.JSHandle<Prototype[]>, Failure, Handles>; // explicit: Page.queryObjects
+	queryObjects<Prototype>(prototypeHandle: Effectify.Accepts<Upstream.JSHandle<Prototype>, Handles>): Effectify.Resolved<Upstream.JSHandle<Prototype[]>, Failure, Handles>; // explicit: Page.queryObjects
 	waitForFunction<Params extends unknown[], Func extends Upstream.EvaluateFunc<Params> = Upstream.EvaluateFunc<Params>>(pageFunction: string | Func, options?: Upstream.FrameWaitForFunctionOptions | undefined, ...args: Params): Effectify.Resolved<Upstream.HandleFor<Awaited<ReturnType<Func>>>, Failure, Handles>; // explicit: Page.waitForFunction
 	readonly $: ReturnType<typeof liftedPage_$>; // lifted: Page.$
 	readonly $$: ReturnType<typeof liftedPage_$$>; // lifted: Page.$$

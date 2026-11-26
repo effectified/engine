@@ -34,6 +34,13 @@ class Client {
 	name(): string {
 		return this.label;
 	}
+	/** Takes back an object it handed out, as upstream APIs do. */
+	owns(connection: Connection): boolean {
+		return connection === this.last;
+	}
+	async ping(connection: Connection): Promise<boolean> {
+		return connection === this.last;
+	}
 	with(label: string): this {
 		this.label = label;
 		return this;
@@ -52,7 +59,7 @@ interface ConnectionFacade extends Effectified<Connection, TestError, Handles> {
 const kinds: Record<string, HandleKind> = {
 	Client: {
 		name: "Client",
-		spec: { methods: ["connect", "send", "name", "with"], async: { connect: true, send: true }, returns: { connect: "Connection", with: "Client" } },
+		spec: { methods: ["connect", "send", "name", "with", "owns", "ping"], async: { connect: true, send: true, ping: true }, returns: { connect: "Connection", with: "Client" } },
 	},
 	Connection: {
 		name: "Connection",
@@ -124,6 +131,17 @@ describe("effectify", () => {
 		expect(facade.name()).toBe("renamed");
 		expect(facade.upstream).toBeInstanceOf(Client);
 	});
+
+	it.effect("hands upstream its own object when given a facade, and types the facade as accepted", () =>
+		Effect.gen(function* () {
+			const facade = client();
+			const connection = yield* Effect.scoped(facade.connect());
+			expectTypeOf(facade.owns).parameter(0).toEqualTypeOf<Connection | ConnectionFacade>();
+			expect(facade.owns(connection)).toBe(true);
+			expect(yield* facade.ping(connection)).toBe(true);
+			expect(facade.owns(new Connection())).toBe(false);
+		}),
+	);
 
 	it.effect("is lazy: nothing runs until the Effect does", () =>
 		Effect.gen(function* () {
