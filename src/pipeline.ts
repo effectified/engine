@@ -125,9 +125,12 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 /** How often `reconcile` regenerates; tsc names at most a few missing properties per error, so it may take several. */
 const MAX_ROUNDS = 12;
 
-/** Runs the facade package's own tests (`test/*.test.ts`, written by agents or people; the generator keeps them). */
+/**
+ * Runs the facade package's own tests (`test/*.test.ts`, written by agents or people; the generator keeps them)
+ * through its `test` script, which carries the package's vitest flags (a browser facade's longer timeout).
+ */
 export const test = Effect.fn("test")(function* (files: TargetFiles) {
-	const result = yield* runCommand("node", ["node_modules/vitest/vitest.mjs", "--run", "--passWithNoTests"], files.package);
+	const result = yield* runCommand("npm", ["run", "--silent", "test"], files.package);
 	if (result.exitCode !== 0) return yield* new StepError({ step: "test", reason: tail(result.output) });
 	return { output: tail(result.output) };
 });

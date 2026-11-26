@@ -67,6 +67,7 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 | [`effectify-t3`](skills/effectify-t3/SKILL.md) | Orchestrating it in T3 Code: the plan's units as delegates in worktrees, merged in order |
 | [`effectify-recipe`](skills/effectify-recipe/SKILL.md) | Reviewing and deciding a recipe |
 | [`effectify-tests`](skills/effectify-tests/SKILL.md) | Behaviour tests against the real library and local services |
+| [`effectify-ui`](skills/effectify-ui/SKILL.md) | Frontend libraries on Effect UI: bindings, mounts, and tests in Chrome |
 | [`effectify-sync`](skills/effectify-sync/SKILL.md) | Following upstream releases |
 | [`effectify-migrate`](skills/effectify-migrate/SKILL.md) | Moving an application onto a facade |
 | [`effectify-engine`](skills/effectify-engine/SKILL.md) | Improving the engine when a target exposes a gap |

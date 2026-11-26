@@ -34,7 +34,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [bullmq, nodemailer, puppeteer-core, sharp, simple-git]
+        target: [bullmq, nodemailer, puppeteer-core, sharp, simple-git, awesome.me__webawesome, chart.js, emoji-picker-element]
     services:
       redis:
         image: redis:7-alpine
@@ -49,7 +49,7 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Chrome for puppeteer-core
+      - name: Chrome for puppeteer-core and the Effect UI facades
         run: echo "CHROME_BIN=$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
       - name: Regenerate and type check with TypeScript 7
         run: node src/bin.ts reconcile ${{ matrix.target }}
