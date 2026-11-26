@@ -78,21 +78,25 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 
 	// Errors
 	const catchAll = recipe.errors.at(-1);
+	const carried = (error: (typeof recipe.errors)[number]) => (error.instanceOf === undefined ? [] : upstreamFields(surface, error.instanceOf, error.codes.length > 0));
 	for (const error of recipe.errors) {
 		const doc =
 			error.instanceOf !== undefined
-				? `${recipe.package} failed with its \`${error.instanceOf}\`.`
+				? `${recipe.package} failed with its \`${error.instanceOf}\`${carried(error).length === 0 ? "" : `, whose ${carried(error).map((field) => `\`${field.upstream}\``).join(", ")} it carries`}.`
 				: `Any other failure of ${recipe.package}; \`code\` carries upstream's error code when it has one.`;
-		push(`/** ${doc} */`, `export class ${error.tag} extends Schema.TaggedError<${error.tag}>()(${JSON.stringify(error.tag)}, Effectify.errorFields) {}`, "");
+		const fields = carried(error);
+		const schema = fields.length === 0 ? "Effectify.errorFields" : `{ ...Effectify.errorFields, ${fields.map((field) => `${memberName(field.name)}: ${field.schema}`).join(", ")} }`;
+		push(`/** ${doc} */`, `export class ${error.tag} extends Schema.TaggedError<${error.tag}>()(${JSON.stringify(error.tag)}, ${schema}) {}`, "");
 	}
 	push(`/** Every failure of the facade. */`, `export type Failure = ${recipe.errors.map((error) => error.tag).join(" | ")};`, "");
 	push("const classify: Effectify.Classify<Failure> = (operation, cause) => {", "\tconst fields = Effectify.describe(operation, cause);");
 	for (const error of recipe.errors.slice(0, -1)) {
-		const tests = [
-			...(error.instanceOf === undefined ? [] : [`cause instanceof Upstream.${error.instanceOf}`]),
-			...(error.codes.length === 0 ? [] : [`[${error.codes.map((code) => JSON.stringify(code)).join(", ")}].includes(fields.code ?? "")`]),
-		];
-		if (tests.length > 0) push(`\tif (${tests.join(" || ")}) return new ${error.tag}(fields);`);
+		// `instanceof` narrows `cause` to upstream's class: each field it carries is copied with its own type.
+		const copies = carried(error).map((field) => `${memberName(field.name)}: cause${propertyAccess(field.upstream)}`);
+		if (error.instanceOf !== undefined) {
+			push(`\tif (cause instanceof Upstream.${error.instanceOf}) return new ${error.tag}(${copies.length === 0 ? "fields" : `{ ...fields, ${copies.join(", ")} }`});`);
+		}
+		if (error.codes.length > 0) push(`\tif ([${error.codes.map((code) => JSON.stringify(code)).join(", ")}].includes(fields.code ?? "")) return new ${error.tag}(fields);`);
 	}
 	push(`\treturn new ${catchAll?.tag ?? `${recipe.prefix}Error`}(fields);`, "};", "");
 
@@ -528,6 +532,49 @@ function splitTopLevel(text: string, separator = ","): ReadonlyArray<string> {
 	parts.push(text.slice(start).trim());
 	return parts.filter((part) => part.length > 0);
 }
+
+/** A field an upstream error class declares, as its tagged error carries it: its name there and its Schema. */
+interface CarriedField {
+	readonly upstream: string;
+	readonly name: string;
+	readonly schema: string;
+}
+
+/**
+ * The fields of upstream error class `name` its tagged error carries. Upstream's `code` replaces the facade's (a
+ * JSON-RPC code is a number); an `operation` of upstream's is `upstreamOperation`, the facade's own names the call.
+ * Each field's Schema follows its type: strings, numbers, booleans and string literals as such, `null` and an
+ * optional field kept, anything else `Unknown`. `allOptional`: the error is also chosen by a code, with no instance.
+ */
+function upstreamFields(surface: Surface, name: string, allOptional: boolean): ReadonlyArray<CarriedField> {
+	const item = surface.exports.find((candidate) => candidate.kind === "class" && candidate.name === name);
+	if (item?.kind !== "class") return [];
+	return (item.fields ?? []).map((field) => ({
+		upstream: field.name,
+		name: field.name === "operation" ? "upstreamOperation" : field.name,
+		schema: fieldSchema(field.type, field.optional || allOptional),
+	}));
+}
+
+function fieldSchema(type: string, optional: boolean): string {
+	const parts = splitTopLevel(type, "|");
+	const present = parts.filter((part) => part !== "undefined" && part !== "null");
+	const nullable = parts.includes("null");
+	const absent = optional || parts.includes("undefined");
+	const base = present.length > 0 && present.every((part) => /^"[^"\\]*"$/.test(part))
+		? `Schema.Literals([${present.join(", ")}])`
+		: present.length === 1 && present[0] !== undefined && present[0] in PRIMITIVE_SCHEMAS
+			? (PRIMITIVE_SCHEMAS[present[0]] ?? "Schema.Unknown")
+			: present.length === 2 && present.includes("true") && present.includes("false")
+				? "Schema.Boolean"
+				: undefined;
+	// `Unknown` takes null and undefined already.
+	if (base === undefined) return "Schema.Unknown";
+	const withNull = nullable ? `Schema.NullOr(${base})` : base;
+	return absent ? `Schema.optional(${withNull})` : withNull;
+}
+
+const PRIMITIVE_SCHEMAS: Readonly<Record<string, string>> = { string: "Schema.String", number: "Schema.Number", boolean: "Schema.Boolean" };
 
 /** Whether an export is typed by its overloads written out: it is generic, and the recipe does not keep it derived. */
 function isExplicit(name: string, signatures: ReadonlyArray<Signature>, recipe: Recipe): boolean {

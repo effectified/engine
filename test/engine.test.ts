@@ -171,6 +171,20 @@ describe("generate: classes made by statics, annotated exports, lifted methods",
 				},
 				error: false,
 			},
+			{
+				kind: "class",
+				name: "HttpError",
+				handle: "HttpError",
+				constructors: [],
+				error: true,
+				fields: [
+					{ name: "body", type: "string | undefined", optional: true },
+					{ name: "kind", type: '"client" | "server"', optional: false },
+					{ name: "operation", type: "string", optional: false },
+					{ name: "request", type: "Request", optional: false },
+					{ name: "status", type: "number", optional: false },
+				],
+			},
 		],
 	});
 	const recipe = Schema.decodeUnknownSync(Recipe)({
@@ -181,7 +195,10 @@ describe("generate: classes made by statics, annotated exports, lifted methods",
 		prefix: "RuntimeLib",
 		exports: ["Runtime"],
 		handles: { Runtime: { release: "close", events: [] } },
-		errors: [{ tag: "RuntimeLibError", codes: [] }],
+		errors: [
+			{ tag: "HttpError", instanceOf: "HttpError", codes: [] },
+			{ tag: "RuntimeLibError", codes: [] },
+		],
 		services: [],
 		methods: {},
 		derived: ["Runtime.pick"],
@@ -201,6 +218,18 @@ describe("generate: classes made by statics, annotated exports, lifted methods",
 			expect(source).not.toContain("version:");
 			expect(source).toContain("const liftedRuntime_pick = () => Effectify.lifted<Failure, Handles>()(instanceOfRuntime.pick); // lifted: Runtime.pick");
 			expect(source).toContain("readonly pick: ReturnType<typeof liftedRuntime_pick>; // lifted: Runtime.pick");
+		}).pipe(Effect.provide(NodeServices.layer)),
+	);
+
+	it.effect("carries an error class's own fields, each with its Schema, copied from upstream's error", () =>
+		Effect.gen(function* () {
+			const source = (yield* generate(surface, recipe)).get("src/index.ts") ?? "";
+			expect(source).toContain(
+				`export class HttpError extends Schema.TaggedError<HttpError>()("HttpError", { ...Effectify.errorFields, body: Schema.optional(Schema.String), kind: Schema.Literals(["client", "server"]), upstreamOperation: Schema.String, request: Schema.Unknown, status: Schema.Number }) {}`,
+			);
+			expect(source).toContain(
+				"\tif (cause instanceof Upstream.HttpError) return new HttpError({ ...fields, body: cause.body, kind: cause.kind, upstreamOperation: cause.operation, request: cause.request, status: cause.status });",
+			);
 		}).pipe(Effect.provide(NodeServices.layer)),
 	);
 

@@ -71,6 +71,8 @@ export const Export = Schema.Union([
 		statics: Schema.optional(Schema.Record(Schema.String, Schema.Array(Signature))),
 		/** Whether instances are errors (the class extends `Error`). */
 		error: Schema.Boolean,
+		/** For an error class: the public fields it declares beyond `Error`'s (`status`, `body`), with their types. */
+		fields: Schema.optional(Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String, optional: Schema.Boolean }))),
 		/** The class it extends, when that is declared by the target too. */
 		base: Schema.optional(Schema.String),
 	}),

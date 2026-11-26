@@ -184,6 +184,18 @@
 				}
 			],
 			"error": true,
+			"fields": [
+				{
+					"name": "code",
+					"type": "number | undefined",
+					"optional": false
+				},
+				{
+					"name": "originalMessage",
+					"type": "string",
+					"optional": false
+				}
+			],
 			"base": "ProtocolError"
 		},
 		{
@@ -649,6 +661,18 @@
 				}
 			],
 			"error": true,
+			"fields": [
+				{
+					"name": "code",
+					"type": "number | undefined",
+					"optional": false
+				},
+				{
+					"name": "originalMessage",
+					"type": "string",
+					"optional": false
+				}
+			],
 			"base": "PuppeteerError"
 		},
 		{

@@ -47,6 +47,9 @@ const NO_TRUNCATION = NodeBuilderFlags.NoTruncation;
 /** How deep the analyzer follows results from the entry; deeper objects stay upstream objects in the facade. */
 const MAX_DEPTH = 4;
 
+/** What every error has already: its facade carries these as `message` and `cause`. */
+const ERROR_OWN = new Set(["name", "message", "stack", "cause"]);
+
 /** Method names that release what they are called on. */
 const RELEASE_NAMES = new Set(["close", "quit", "disconnect", "destroy", "end", "dispose", "stop", "shutdown", "release", "terminate"]);
 
@@ -134,6 +137,7 @@ class SurfaceReader {
 				? []
 				: constructors.filter((signature) => this.isPublicNode(signature.declaration));
 			const statics = error ? {} : this.readStatics(type, reference);
+			const fields = error && instance !== undefined ? this.errorFields(instance) : [];
 			return {
 				kind: "class",
 				name: symbol.name,
@@ -141,6 +145,7 @@ class SurfaceReader {
 				constructors: open.map((signature) => this.readSignature(signature, reference, 0)),
 				...(Object.keys(statics).length === 0 ? {} : { statics }),
 				error,
+				...(fields.length === 0 ? {} : { fields }),
 				...(base === undefined ? {} : { base }),
 			};
 		}
@@ -376,6 +381,23 @@ class SurfaceReader {
 		const type = declared === undefined ? undefined : this.checker.getDeclaredTypeOfSymbol(declared);
 		const base = type !== undefined && type.isClassOrInterface() ? this.checker.getBaseTypes(type)[0]?.getSymbol() : undefined;
 		return base !== undefined && this.isTargetDeclaration(base) ? base.name : undefined;
+	}
+
+	/**
+	 * The public fields an error class declares beyond `Error`'s own, that are no functions: what a program reads off
+	 * the failure (a status, a body, a numeric code).
+	 */
+	private errorFields(instance: Type): ReadonlyArray<{ readonly name: string; readonly type: string; readonly optional: boolean }> {
+		return this.checker
+			.getPropertiesOfType(instance)
+			.filter((property) => !ERROR_OWN.has(property.name) && !property.name.startsWith("_") && !property.name.startsWith("#") && !property.name.startsWith("__@"))
+			.filter((property) => this.isTargetDeclaration(property) && this.isPublic(property))
+			.flatMap((property) => {
+				const type = this.checker.getTypeOfSymbol(property);
+				if (type === undefined || this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call).length > 0) return [];
+				return [{ name: property.name, type: this.print(type), optional: (property.flags & SymbolFlags.Optional) !== 0 }];
+			})
+			.sort((a, b) => a.name.localeCompare(b.name));
 	}
 
 	/** A class's public static methods the target declares, each signature read like a method's. */

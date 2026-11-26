@@ -7,11 +7,11 @@ import * as Effectify from "./internal/effectify.ts";
 /** The upstream package, for its types and anything the facade does not wrap. */
 export { Upstream };
 
-/** puppeteer-core failed with its `ConnectionClosedError`. */
-export class ConnectionClosedError extends Schema.TaggedError<ConnectionClosedError>()("ConnectionClosedError", Effectify.errorFields) {}
+/** puppeteer-core failed with its `ConnectionClosedError`, whose `code`, `originalMessage` it carries. */
+export class ConnectionClosedError extends Schema.TaggedError<ConnectionClosedError>()("ConnectionClosedError", { ...Effectify.errorFields, code: Schema.optional(Schema.Number), originalMessage: Schema.String }) {}
 
-/** puppeteer-core failed with its `ProtocolError`. */
-export class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", Effectify.errorFields) {}
+/** puppeteer-core failed with its `ProtocolError`, whose `code`, `originalMessage` it carries. */
+export class ProtocolError extends Schema.TaggedError<ProtocolError>()("ProtocolError", { ...Effectify.errorFields, code: Schema.optional(Schema.Number), originalMessage: Schema.String }) {}
 
 /** puppeteer-core failed with its `TimeoutError`. */
 export class TimeoutError extends Schema.TaggedError<TimeoutError>()("TimeoutError", Effectify.errorFields) {}
@@ -30,8 +30,8 @@ export type Failure = ConnectionClosedError | ProtocolError | TimeoutError | Tou
 
 const classify: Effectify.Classify<Failure> = (operation, cause) => {
 	const fields = Effectify.describe(operation, cause);
-	if (cause instanceof Upstream.ConnectionClosedError) return new ConnectionClosedError(fields);
-	if (cause instanceof Upstream.ProtocolError) return new ProtocolError(fields);
+	if (cause instanceof Upstream.ConnectionClosedError) return new ConnectionClosedError({ ...fields, code: cause.code, originalMessage: cause.originalMessage });
+	if (cause instanceof Upstream.ProtocolError) return new ProtocolError({ ...fields, code: cause.code, originalMessage: cause.originalMessage });
 	if (cause instanceof Upstream.TimeoutError) return new TimeoutError(fields);
 	if (cause instanceof Upstream.TouchError) return new TouchError(fields);
 	if (cause instanceof Upstream.UnsupportedOperation) return new UnsupportedOperation(fields);

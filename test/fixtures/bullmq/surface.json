@@ -1794,7 +1794,14 @@
 					]
 				}
 			],
-			"error": true
+			"error": true,
+			"fields": [
+				{
+					"name": "code",
+					"type": "RelayErrorCode",
+					"optional": false
+				}
+			]
 		},
 		{
 			"kind": "function",
@@ -2958,7 +2965,14 @@
 					]
 				}
 			],
-			"error": true
+			"error": true,
+			"fields": [
+				{
+					"name": "schema",
+					"type": "string",
+					"optional": false
+				}
+			]
 		},
 		{
 			"kind": "class",
@@ -2987,7 +3001,29 @@
 					]
 				}
 			],
-			"error": true
+			"error": true,
+			"fields": [
+				{
+					"name": "clientVersion",
+					"type": "number",
+					"optional": false
+				},
+				{
+					"name": "databaseVersion",
+					"type": "number",
+					"optional": false
+				},
+				{
+					"name": "minimumClientVersion",
+					"type": "number",
+					"optional": false
+				},
+				{
+					"name": "supportedVersion",
+					"type": "number",
+					"optional": false
+				}
+			]
 		},
 		{
 			"kind": "class",
@@ -3016,7 +3052,19 @@
 					]
 				}
 			],
-			"error": true
+			"error": true,
+			"fields": [
+				{
+					"name": "minimumVersion",
+					"type": "number",
+					"optional": false
+				},
+				{
+					"name": "serverVersion",
+					"type": "string",
+					"optional": false
+				}
+			]
 		},
 		{
 			"kind": "function",

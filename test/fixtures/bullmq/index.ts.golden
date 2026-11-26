@@ -16,20 +16,20 @@ export class DelayedError extends Schema.TaggedError<DelayedError>()("DelayedErr
 /** bullmq failed with its `RateLimitError`. */
 export class RateLimitError extends Schema.TaggedError<RateLimitError>()("RateLimitError", Effectify.errorFields) {}
 
-/** bullmq failed with its `RelayError`. */
-export class RelayError extends Schema.TaggedError<RelayError>()("RelayError", Effectify.errorFields) {}
+/** bullmq failed with its `RelayError`, whose `code` it carries. */
+export class RelayError extends Schema.TaggedError<RelayError>()("RelayError", { ...Effectify.errorFields, code: Schema.Unknown }) {}
 
-/** bullmq failed with its `SchemaMigrationRequiredError`. */
-export class SchemaMigrationRequiredError extends Schema.TaggedError<SchemaMigrationRequiredError>()("SchemaMigrationRequiredError", Effectify.errorFields) {}
+/** bullmq failed with its `SchemaMigrationRequiredError`, whose `schema` it carries. */
+export class SchemaMigrationRequiredError extends Schema.TaggedError<SchemaMigrationRequiredError>()("SchemaMigrationRequiredError", { ...Effectify.errorFields, schema: Schema.String }) {}
 
-/** bullmq failed with its `SchemaVersionMismatchError`. */
-export class SchemaVersionMismatchError extends Schema.TaggedError<SchemaVersionMismatchError>()("SchemaVersionMismatchError", Effectify.errorFields) {}
+/** bullmq failed with its `SchemaVersionMismatchError`, whose `clientVersion`, `databaseVersion`, `minimumClientVersion`, `supportedVersion` it carries. */
+export class SchemaVersionMismatchError extends Schema.TaggedError<SchemaVersionMismatchError>()("SchemaVersionMismatchError", { ...Effectify.errorFields, clientVersion: Schema.Number, databaseVersion: Schema.Number, minimumClientVersion: Schema.Number, supportedVersion: Schema.Number }) {}
 
 /** bullmq failed with its `UnrecoverableError`. */
 export class UnrecoverableError extends Schema.TaggedError<UnrecoverableError>()("UnrecoverableError", Effectify.errorFields) {}
 
-/** bullmq failed with its `UnsupportedPostgresVersionError`. */
-export class UnsupportedPostgresVersionError extends Schema.TaggedError<UnsupportedPostgresVersionError>()("UnsupportedPostgresVersionError", Effectify.errorFields) {}
+/** bullmq failed with its `UnsupportedPostgresVersionError`, whose `minimumVersion`, `serverVersion` it carries. */
+export class UnsupportedPostgresVersionError extends Schema.TaggedError<UnsupportedPostgresVersionError>()("UnsupportedPostgresVersionError", { ...Effectify.errorFields, minimumVersion: Schema.Number, serverVersion: Schema.String }) {}
 
 /** bullmq failed with its `WaitingChildrenError`. */
 export class WaitingChildrenError extends Schema.TaggedError<WaitingChildrenError>()("WaitingChildrenError", Effectify.errorFields) {}
@@ -48,11 +48,11 @@ const classify: Effectify.Classify<Failure> = (operation, cause) => {
 	if (cause instanceof Upstream.ConnectionClosedError) return new ConnectionClosedError(fields);
 	if (cause instanceof Upstream.DelayedError) return new DelayedError(fields);
 	if (cause instanceof Upstream.RateLimitError) return new RateLimitError(fields);
-	if (cause instanceof Upstream.RelayError) return new RelayError(fields);
-	if (cause instanceof Upstream.SchemaMigrationRequiredError) return new SchemaMigrationRequiredError(fields);
-	if (cause instanceof Upstream.SchemaVersionMismatchError) return new SchemaVersionMismatchError(fields);
+	if (cause instanceof Upstream.RelayError) return new RelayError({ ...fields, code: cause.code });
+	if (cause instanceof Upstream.SchemaMigrationRequiredError) return new SchemaMigrationRequiredError({ ...fields, schema: cause.schema });
+	if (cause instanceof Upstream.SchemaVersionMismatchError) return new SchemaVersionMismatchError({ ...fields, clientVersion: cause.clientVersion, databaseVersion: cause.databaseVersion, minimumClientVersion: cause.minimumClientVersion, supportedVersion: cause.supportedVersion });
 	if (cause instanceof Upstream.UnrecoverableError) return new UnrecoverableError(fields);
-	if (cause instanceof Upstream.UnsupportedPostgresVersionError) return new UnsupportedPostgresVersionError(fields);
+	if (cause instanceof Upstream.UnsupportedPostgresVersionError) return new UnsupportedPostgresVersionError({ ...fields, minimumVersion: cause.minimumVersion, serverVersion: cause.serverVersion });
 	if (cause instanceof Upstream.WaitingChildrenError) return new WaitingChildrenError(fields);
 	if (cause instanceof Upstream.WaitingError) return new WaitingError(fields);
 	return new BullmqError(fields);
