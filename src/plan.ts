@@ -130,13 +130,17 @@ export function plan(surface: Surface, recipe: Recipe, directory: string): Plan 
 		id: "docs",
 		title: `Document ${recipe.name}`,
 		brief: [
-			`Write ${directory}/USAGE.md: how to install ${recipe.name} from its GitHub release, one example per service and`,
-			"per main handle, and how failures map to tagged errors, every example taken from a passing test.",
-			"Follow skills/effectify/SKILL.md (Documentation).",
+			`The README, SKILL.md and page of ${recipe.name} are generated; their examples come from its passing tests.`,
+			"Mark the code a reader should see with `// #region example: <title>` ... `// #endregion` in the tests",
+			recipe.ui === undefined
+				? "(one example per service and per main handle, and one handled failure),"
+				: "and fixtures (the fixture's component and its mount, which the facade's page also runs as a live demo),",
+			`and write the \`tagline\` of ${directory}/recipe.json: one line on what the facade shows of its library.`,
+			"Follow skills/effectify/SKILL.md (Docs).",
 		].join(" "),
-		touches: [`${directory}/USAGE.md`],
+		touches: [`${directory}/package/test/`, `${directory}/recipe.json`],
 		dependsOn: units.filter((unit) => unit.id.startsWith("test-")).map((unit) => unit.id),
-		acceptance: [`pnpm effectify test ${recipe.package}`],
+		acceptance: check,
 	});
 	return { target, facade: recipe.name, units };
 }

@@ -8,6 +8,7 @@ import { manifestPath, readElements } from "./elements.ts";
 import { typedElements } from "./element-types.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
 import { runCommand } from "./command.ts";
+import { readTestDocs } from "./docs.ts";
 import { generate, writeFiles } from "./generate.ts";
 import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, PACKAGES_REPOSITORY, type Recipe, releaseTag, releaseUrl } from "./recipe.ts";
 import { type Scan, scan } from "./scan.ts";
@@ -73,7 +74,7 @@ export const build = Effect.fn("build")(function* (files: TargetFiles) {
 	const fs = yield* FileSystem.FileSystem;
 	const surface = yield* fs.readFileString(files.surface).pipe(Effect.flatMap(decodeSurface));
 	const recipe = yield* readRecipe(files);
-	const generated = yield* generate(surface, recipe);
+	const generated = yield* generate(surface, recipe, yield* readTestDocs(files.package, recipe.name));
 	yield* writeFiles(generated, files.package);
 	// Bindings are all generated: one the recipe no longer offers would still ship and be importable.
 	const elements = `${files.package}/src/elements`;
@@ -194,6 +195,17 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	const written = (yield* fs.readDirectory(packed)).find((file) => file.endsWith(".tgz")) ?? "";
 	const tarball = path.join(packed, `effectified-${name}-${version}.tgz`);
 	if (written !== path.basename(tarball)) yield* fs.rename(path.join(packed, written), tarball);
+	// A frontend facade's fixtures, built by Vite, are its demo: effectified.dev embeds the release's own.
+	const assets = [tarball];
+	if (recipe.ui !== undefined && (yield* readTestDocs(files.package, recipe.name)).demos.length > 0) {
+		const site = path.join(packed, "demo");
+		const demo = yield* runCommand("npm", ["run", "--silent", "demo", "--", site], files.package);
+		if (demo.exitCode !== 0) return yield* new StepError({ step: "demo", reason: tail(demo.output) });
+		const archive = path.join(packed, `effectified-${name}-${version}-demo.tgz`);
+		const tar = yield* runCommand("tar", ["-czf", archive, "-C", site, "."], files.package);
+		if (tar.exitCode !== 0) return yield* new StepError({ step: "tar", reason: tail(tar.output) });
+		assets.push(archive);
+	}
 	const url = releaseUrl(recipe);
 	const notes = path.join(packed, "NOTES.md");
 	yield* fs.writeFileString(
@@ -213,7 +225,7 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	);
 	const created = yield* runCommand(
 		"gh",
-		["release", "create", tag, "--repo", PACKAGES_REPOSITORY, "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, tarball],
+		["release", "create", tag, "--repo", PACKAGES_REPOSITORY, "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, ...assets],
 		root,
 	);
 	if (created.exitCode !== 0) return yield* new StepError({ step: "gh release", reason: tail(created.output) });

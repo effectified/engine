@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { extractExamples } from "../src/docs.ts";
 import { drift } from "../src/drift.ts";
 import { generate } from "../src/generate.ts";
 import { explicitFailures, overridesFrom } from "../src/pipeline.ts";
@@ -134,4 +135,70 @@ describe("generate", () => {
 			}).pipe(Effect.provide(NodeServices.layer)),
 		);
 	}
+});
+
+describe("extractExamples", () => {
+	const file = [
+		`import { describe, expect, it } from "@effect/vitest";`,
+		`import { Effect, Schema } from "effect";`,
+		`import { SharpError, sharp } from "../src/index.ts";`,
+		`import { chrome } from "./support/browser.ts";`,
+		"",
+		"// #region example: Resize an image",
+		`const red = { create: { width: 4, height: 2, channels: 3, background: "#ff0000" } } as const;`,
+		"// #endregion",
+		"",
+		`it.effect("resizes", () =>`,
+		"\tEffect.gen(function* () {",
+		"\t\t// #region example: Resize an image",
+		"\t\tconst image = yield* sharp(red);",
+		"\t\tconst png = yield* image.resize(2, 1).png().toBuffer();",
+		"\t\t// #endregion",
+		`\t\texpect(png.length).toBeGreaterThan(0);`,
+		"\t}),",
+		");",
+	].join("\n");
+
+	it("joins regions of one title, dedents them, and imports what they use, the facade by its name", () => {
+		expect(extractExamples("test/facade.test.ts", file, "@effectified/sharp")).toStrictEqual([
+			{
+				title: "Resize an image",
+				source: "test/facade.test.ts",
+				code: [
+					`import { sharp } from "@effectified/sharp";`,
+					"",
+					`const red = { create: { width: 4, height: 2, channels: 3, background: "#ff0000" } } as const;`,
+					"",
+					"const image = yield* sharp(red);",
+					"const png = yield* image.resize(2, 1).png().toBuffer();",
+					"",
+				].join("\n"),
+			},
+		]);
+	});
+
+	it("shares a region opened for two examples, and imports nothing a comment only mentions", () => {
+		const shared = [
+			`import { Effect } from "effect";`,
+			`import { make, XError } from "../src/index.ts";`,
+			"// #region example: One",
+			"// #region example: Two",
+			"const options = { n: 1 };",
+			"// #endregion",
+			"// #region example: One",
+			"const a = make(options); // fails with XError",
+			"// #endregion",
+			"// #region example: Two",
+			"const b = Effect.succeed(options);",
+			"// #endregion",
+		].join("\n");
+		expect(extractExamples("test/x.test.ts", shared, "@effectified/x").map((example) => example.code)).toStrictEqual([
+			`import { make } from "@effectified/x";\n\nconst options = { n: 1 };\n\nconst a = make(options); // fails with XError\n`,
+			`import { Effect } from "effect";\n\nconst options = { n: 1 };\n\nconst b = Effect.succeed(options);\n`,
+		]);
+	});
+
+	it("finds nothing in a file without regions", () => {
+		expect(extractExamples("test/x.test.ts", `import { Effect } from "effect";\nEffect.void;\n`, "@effectified/x")).toStrictEqual([]);
+	});
 });

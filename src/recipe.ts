@@ -53,6 +53,11 @@ export const Recipe = Schema.Struct({
 	name: Schema.String,
 	/** The prefix of the facade's own names: its catch-all error is `<prefix>Error`. */
 	prefix: Schema.String,
+	/**
+	 * One line on what the facade shows of its library (`a builder that is also a Node stream`), written by an agent
+	 * or a person: the facade's README, skill and page lead with it, and a redraft keeps it.
+	 */
+	tagline: Schema.optional(Schema.String),
 	/** Exported functions and classes the facade offers. */
 	exports: Schema.Array(Schema.String),
 	handles: Schema.Record(Schema.String, HandleRecipe),
@@ -112,15 +117,39 @@ export function facadeVersion(recipe: Recipe): string {
 /** The repository facades live in and are released from: the engine makes them, the community keeps them there. */
 export const PACKAGES_REPOSITORY = "effectified/packages";
 
+/** A facade's description, the first line of its package.json, its README and its skill. */
+export function description(recipe: Recipe): string {
+	return recipe.ui === undefined
+		? `${recipe.package} in Effect: its async calls as Effects, its iterables as Streams, its resources scoped, its failures tagged`
+		: `${recipe.package} for Effect UI: typed bindings and mounts, its events as messages, its instances scoped to their elements`;
+}
+
+/** The site that lists every facade, each with a page `/<slug>` and its newest release at `/<slug>.tgz`. */
+export const SITE = "https://effectified.dev";
+
+/** The facade's name without its scope: `@effectified/sharp` is `sharp`. */
+export function slug(recipe: Recipe): string {
+	return recipe.name.replace(/^@effectified\//, "");
+}
+
+/** The URL that always installs the facade's newest release: effectified.dev redirects it to that release's tarball. */
+export function latestUrl(recipe: Recipe): string {
+	return `${SITE}/${slug(recipe)}.tgz`;
+}
+
 /** The facade's release tag, `<name>-v<version>`. */
 export function releaseTag(recipe: Recipe): string {
-	return `${recipe.name.replace(/^@effectified\//, "")}-v${facadeVersion(recipe)}`;
+	return `${slug(recipe)}-v${facadeVersion(recipe)}`;
+}
+
+/** Where `effectify release` publishes a frontend facade's built demo, beside its tarball. */
+export function demoUrl(recipe: Recipe): string {
+	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${slug(recipe)}-${facadeVersion(recipe)}-demo.tgz`;
 }
 
 /** Where `effectify release` publishes a facade: the tarball of its release on PACKAGES_REPOSITORY. */
 export function releaseUrl(recipe: Recipe): string {
-	const name = recipe.name.replace(/^@effectified\//, "");
-	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${name}-${facadeVersion(recipe)}.tgz`;
+	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${slug(recipe)}-${facadeVersion(recipe)}.tgz`;
 }
 
 /** Reads a stored recipe; files are a trust boundary. */
@@ -221,6 +250,7 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		methods: previous?.methods ?? {},
 		derived: previous?.derived ?? [],
 		testDependencies: previous?.testDependencies ?? {},
+		...(previous?.tagline === undefined ? {} : { tagline: previous.tagline }),
 		...(previous?.unlifted === undefined ? {} : { unlifted: previous.unlifted }),
 		...(previous?.typeDependencies === undefined ? {} : { typeDependencies: previous.typeDependencies }),
 		// A new upstream version starts again at revision 1.

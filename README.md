@@ -44,6 +44,7 @@ const program = Effect.scoped(
 | **reconcile** | Type checks with TypeScript 7 and turns what the compiler says into recipe overrides, until the package compiles: the facade's types are the compiler's, and the runtime follows them. | `tsc` (native) |
 | **plan** | Splits the judgment work (review the recipe, test each handle, settle overrides, write the docs) into units with self-contained briefs, file boundaries, dependencies and acceptance commands, for coding agents fanned out by **T3 Code**. | `skills/effectify-t3` in effectified/packages |
 | **sync** | Every day (effectified/packages' `sync.yml`): a newer upstream version is studied, its **drift** written (`DRIFT.md`: added, removed, changed, breaking or not), the recipe redrafted, the facade regenerated, type checked and tested, and a pull request opened. | `drift`, `sync` |
+| **docs** | With every generate: the facade's README, its agent skill (`SKILL.md`, shipped in the package) and `docs.json`, which effectified.dev renders as its page. Examples are regions of its passing tests (`// #region example: <title>`); a frontend facade's fixtures are also built into a live demo, attached to its release. | `src/docs.ts` |
 | **usages** | Lists where an application uses a library, as a checklist for moving it onto the facade. | ast-grep |
 
 Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `test`, `plan`, `drift`, `sync`, `usages`, `release`; `make` runs the first five.
@@ -53,7 +54,7 @@ Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `t
 Released on GitHub as `v<version>`, never replaced:
 
 ```sh
-pnpm add -D https://github.com/effectified/engine/releases/download/v0.1.0/effectified-engine-0.1.0.tgz
+pnpm add -D https://github.com/effectified/engine/releases/download/v0.2.0/effectified-engine-0.2.0.tgz
 ```
 
 The package carries the `effectify` command, built to JavaScript, and the runtimes it copies into every facade (`src/runtime`). After CI passes on `main`, `release.yml` releases the version in `package.json` if it is not released yet.

@@ -219,7 +219,7 @@ function report(error: unknown): string {
 }
 
 effectify.pipe(
-	Command.run({ version: "0.1.0" }),
+	Command.run({ version: "0.2.0" }),
 	Effect.tapError((error) => Console.error(report(error))),
 	Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
 	NodeRuntime.runMain,

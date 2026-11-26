@@ -21,6 +21,7 @@ Every facade in effectified/packages is a test of the engine: real libraries, ea
 | Agreement with the compiler | `src/pipeline.ts` (`reconcile`) | reads tsc's diagnostics into recipe overrides until the package compiles |
 | The facade's runtime | `src/runtime/effectify.ts`, `src/runtime/ui.ts` | copied verbatim into every facade (shipped as source in the release); its types derive the facade from upstream |
 | Upstream changes | `src/drift.ts`, `sync` in `src/pipeline.ts` | |
+| Docs | `src/docs.ts` | README, SKILL.md and docs.json from the surface, the recipe and the tests' example regions; docs.json is a stored format read by effectified.dev (`schema`) |
 | Orchestration | `src/plan.ts` | units for T3 Code (`effectify-t3` in effectified/packages) |
 
 ## Rules the engine keeps

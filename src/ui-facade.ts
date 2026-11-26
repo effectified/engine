@@ -4,7 +4,7 @@
 // app in Chrome: a generated harness serves fixtures with Vite and drives them through @effectified/puppeteer-core.
 
 import type { Element } from "./elements.ts";
-import { facadeVersion, type Recipe, releaseUrl } from "./recipe.ts";
+import { description, facadeVersion, type Recipe } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
 
 /**
@@ -26,7 +26,7 @@ const UI_TOOLCHAIN = {
 export function uiFiles(surface: Surface, recipe: Recipe, header: (what: string) => string, runtime: string): ReadonlyMap<string, string> {
 	const ui = recipe.ui;
 	if (ui === undefined) return new Map();
-	const elements = (surface.elements ?? []).filter((element) => recipe.methods[element.tag] !== "exclude");
+	const elements = boundElements(surface, recipe);
 	const files = new Map<string, string>([
 		["package.json", packageJson(recipe, ui.effectUi)],
 		["tsconfig.json", TSCONFIG],
@@ -34,7 +34,7 @@ export function uiFiles(surface: Surface, recipe: Recipe, header: (what: string)
 		["src/internal/ui.ts", `${header("the Effect UI runtime of @effectified/engine, copied verbatim")}${runtime}`],
 		["src/index.ts", indexSource(elements, ui.mounts, header)],
 		["test/support/browser.ts", `${header("the browser harness of frontend facades")}${HARNESS}`],
-		["README.md", readme(surface, recipe, elements)],
+		["test/support/demo.ts", `${header("the demo builder of frontend facades")}${DEMO}`],
 	]);
 	for (const element of elements) files.set(`src/elements/${element.name}.ts`, elementSource(element, recipe, header));
 	if (elements.length > 0) {
@@ -70,9 +70,8 @@ const DOM_EVENTS = new Set(
  */
 function elementSource(element: Element, recipe: Recipe, header: (what: string) => string): string {
 	const untyped = recipe.derived.includes(element.tag);
-	const properties = element.properties.filter((property) => recipe.methods[`${element.tag}.${property}`] !== "exclude");
-	// `<tag>@<event>`: an event and a property may share a name (`md-dialog`'s `open`).
-	const events = element.events.filter((event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude");
+	const properties = boundProperties(element, recipe);
+	const events = boundEvents(element, recipe);
 	const tag = JSON.stringify(element.tag);
 	const propertyType = (property: string) => `Of[${JSON.stringify(property)}]`;
 	const eventType = (event: string) => `DetailOf<${JSON.stringify(event)}>`;
@@ -117,6 +116,28 @@ function elementSource(element: Element, recipe: Recipe, header: (what: string) 
 	].join("\n");
 }
 
+/** The elements a frontend facade binds: those of the surface the recipe does not exclude. */
+export function boundElements(surface: Surface, recipe: Recipe): ReadonlyArray<Element> {
+	return (surface.elements ?? []).filter((element) => recipe.methods[element.tag] !== "exclude");
+}
+
+/** The properties an element's binding sets: the element's own, less the recipe's `<tag>.<property>` excludes. */
+export function boundProperties(element: Element, recipe: Recipe): ReadonlyArray<string> {
+	return element.properties.filter((property) => recipe.methods[`${element.tag}.${property}`] !== "exclude");
+}
+
+/** The custom events an element's binding carries: not DOM events, less the recipe's `<tag>@<event>` excludes. */
+export function boundEvents(element: Element, recipe: Recipe): ReadonlyArray<string> {
+	// `<tag>@<event>`: an event and a property may share a name (`md-dialog`'s `open`).
+	return element.events.filter((event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude");
+}
+
+/** The state a form control's changes mount reports; none when the element is no form control. */
+export function controlState(element: Element, properties: ReadonlyArray<string>): ReadonlyArray<string> {
+	if (!element.events.some((event) => event === "input" || event === "change")) return [];
+	return CONTROL_STATE.filter((key) => properties.includes(key));
+}
+
 /** The state a changes mount reports, when the element has it as a property. */
 const CONTROL_STATE = ["value", "checked", "indeterminate", "selected", "open", "valueAsNumber"];
 
@@ -125,8 +146,8 @@ const CONTROL_STATE = ["value", "checked", "indeterminate", "selected", "open", 
  * UI's payload for these events does not carry a custom element's state.
  */
 function changesSource(element: Element, properties: ReadonlyArray<string>): ReadonlyArray<string> {
-	const state = CONTROL_STATE.filter((key) => properties.includes(key));
-	if (!element.events.some((event) => event === "input" || event === "change") || state.length === 0) return [];
+	const state = controlState(element, properties);
+	if (state.length === 0) return [];
 	return [
 		"",
 		`/** \`<${element.tag}>\`'s ${state.map((key) => `\`${key}\``).join(" and ")} each time it fires \`input\` or \`change\`: \`${element.name}(h).onMount(${element.name}Changes({}).pipe(Mount.map(...)))\`. */`,
@@ -207,6 +228,49 @@ function elementsTest(elements: ReadonlyArray<Element>, header: (what: string) =
 const FIXTURE_HTML = (name: string) =>
 	`<!doctype html>\n<!-- Generated by @effectified/engine: the page of the fixture ${name}.ts. -->\n<html lang="en">\n\t<head>\n\t\t<link rel="icon" href="data:," />\n\t</head>\n\t<body>\n\t\t<div id="root"></div>\n\t\t<script type="module" src="./${name}.ts"></script>\n\t</body>\n</html>\n`;
 
+/**
+ * The demo: every fixture page (`test/fixtures/<name>.html`, an Effect UI app the tests drive) built by Vite into a
+ * static site with relative paths, which effectified.dev embeds on the facade's page. `effectify release` attaches
+ * it to the release; `npm run demo -- <directory>` builds it by hand.
+ */
+const DEMO = `import { copyFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { build } from "vite";
+
+const fixtures = fileURLToPath(new URL("../fixtures/", import.meta.url));
+const pages = readdirSync(fixtures).filter((file) => file.endsWith(".html"));
+const outDir = resolve(process.argv[2] ?? "demo");
+
+await build({
+	root: fixtures,
+	base: "./",
+	logLevel: "warn",
+	build: {
+		outDir,
+		emptyOutDir: true,
+		rollupOptions: { input: Object.fromEntries(pages.map((page) => [page.slice(0, -".html".length), join(fixtures, page)])) },
+	},
+});
+
+// Files a page names by URL rather than imports (a video) are copied as they are.
+for (const file of readdirSync(fixtures).filter((name) => !/\\.(ts|html)$/.test(name))) copyFileSync(join(fixtures, file), join(outDir, file));
+
+// The fixtures are test pages: a neutral stylesheet frames them for a reader, leaving the components' own styles be.
+writeFileSync(join(outDir, "demo.css"), \`:root { color-scheme: light; font: 14px/1.5 system-ui, sans-serif; color: #18181b; background: #fafafa; }
+body { margin: 0; padding: 20px; }
+#root > * { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+button { font: inherit; padding: 6px 12px; border: 1px solid #d4d4d8; border-radius: 6px; background: #fff; cursor: pointer; }
+button:hover { border-color: #a1a1aa; }
+output#state { display: block; max-width: 100%; overflow-x: auto; padding: 8px 10px; border-radius: 6px; background: #18181b; color: #a7f3d0; font: 12px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+output#state::before { content: "Model  "; color: #71717a; }
+\`);
+for (const page of pages) {
+	const file = join(outDir, page);
+	writeFileSync(file, readFileSync(file, "utf8").replace("</head>", '\\t<link rel="stylesheet" href="./demo.css" />\\n\\t</head>'));
+}
+`;
+
 /** The harness: Vite serves test/fixtures, and Chrome opens one through the effectified puppeteer facade. */
 const HARNESS = `import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -255,16 +319,16 @@ function packageJson(recipe: Recipe, effectUi: string): string {
 		{
 			name: recipe.name,
 			version: facadeVersion(recipe),
-			description: `${recipe.package} for Effect UI: typed bindings and mounts, its events as messages, its instances scoped to their elements`,
+			description: description(recipe),
 			type: "module",
 			license: "MIT",
 			exports: {
 				".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
 				"./elements/*": { types: "./dist/elements/*.d.ts", import: "./dist/elements/*.js" },
 			},
-			files: ["dist", "README.md"],
+			files: ["dist", "README.md", "SKILL.md"],
 			sideEffects: ["./dist/elements/*.js", "./dist/index.js"],
-			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests --testTimeout=60000" },
+			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests --testTimeout=60000", demo: "node test/support/demo.ts" },
 			dependencies,
 			peerDependencies: { "@effect/ui": "*", effect: `~${UI_TOOLCHAIN.effect}` },
 			devDependencies: Object.fromEntries(
@@ -317,45 +381,6 @@ const TSCONFIG_BUILD = `${JSON.stringify(
 	null,
 	2,
 )}\n`;
-
-function readme(surface: Surface, recipe: Recipe, elements: ReadonlyArray<Element>): string {
-	const url = releaseUrl(recipe);
-	const first = elements[0];
-	return [
-		`# ${recipe.name}`,
-		"",
-		`[${recipe.package}](https://www.npmjs.com/package/${recipe.package}) ${recipe.version} for [Effect UI](https://ui.effect.website), generated by the [effectified engine](https://github.com/effectified/engine).`,
-		"",
-		...(elements.length === 0
-			? []
-			: [
-					`- ${elements.length} elements bound with \`Html.customElement\`: each property and event typed by ${recipe.package}'s own declarations, each event's \`detail\` a message.`,
-					`- Importing a binding (\`${recipe.name}/elements/${first?.name}\`) defines its element; \`${recipe.name}\` defines them all.`,
-				]),
-		...(recipe.ui?.mounts.length ? [`- Mounts: ${recipe.ui.mounts.map((mount) => `\`${mount}\``).join(", ")}: an instance per element, updated from the view's args, released with the element.`] : []),
-		"",
-		...(first === undefined
-			? []
-			: [
-					"```ts",
-					`import { ${first.name} } from "${recipe.name}";`,
-					"",
-					`// in a view: ${first.name}(h)${first.properties[0] === undefined ? "" : `.${first.properties[0]}(...)`}${first.events[0] === undefined ? "" : `.on(${JSON.stringify(first.events[0])}, (detail) => Message.Changed({ ... }))`}`,
-					"```",
-					"",
-				]),
-		"## Install",
-		"",
-		"Released on GitHub, not npm. Effect UI is in public preview (install its snapshot build):",
-		"",
-		"```sh",
-		`pnpm add ${url} effect https://pkg.pr.new/Effect-TS/ui/@effect/ui@${recipe.ui?.effectUi ?? ""}`,
-		"```",
-		"",
-		`Types: ${surface.types.from === "bundled" ? "bundled with the package" : `\`${surface.types.package}\``}.`,
-		"",
-	].join("\n");
-}
 
 function memberName(name: string): string {
 	return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);

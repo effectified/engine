@@ -4,12 +4,14 @@
 // inputs write the same bytes.
 
 import { Effect, FileSystem, Path } from "effect";
-import { facadeVersion, type Recipe, releaseUrl } from "./recipe.ts";
+import { docsFiles, type TestDocs } from "./docs.ts";
+import { description, facadeVersion, type Recipe } from "./recipe.ts";
+import { callbackMethods, classified, wrappedMethods, wrappedProperties } from "./methods.ts";
 import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
-export const ENGINE_VERSION = "0.1.0";
+export const ENGINE_VERSION = "0.2.0";
 
 /** Pinned versions a generated package builds with. */
 const TOOLCHAIN = { effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7", vitest: "5.1.1", "@effect/vitest": "4.1.5" } as const;
@@ -17,8 +19,11 @@ const TOOLCHAIN = { effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7
 /** Files of a generated package, by path relative to the package. */
 export type Files = ReadonlyMap<string, string>;
 
-/** Generates the facade package's files. */
-export const generate = Effect.fn("generate")(function* (surface: Surface, recipe: Recipe) {
+/** What the docs know of a package without tests. */
+const NO_TESTS: TestDocs = { examples: [], tests: 0, demos: [] };
+
+/** Generates the facade package's files, its docs from `tests` (what `readTestDocs` read of its tests). */
+export const generate = Effect.fn("generate")(function* (surface: Surface, recipe: Recipe, tests: TestDocs = NO_TESTS) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	// The runtimes are copied as source, so the released engine ships src/runtime beside dist/: `../src/runtime`
@@ -26,7 +31,7 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 	const runtimes = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "runtime");
 	if (recipe.ui !== undefined) {
 		const uiRuntime = yield* fs.readFileString(path.join(runtimes, "ui.ts"));
-		return uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime) satisfies Files;
+		return new Map([...uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime), ...docsFiles(surface, recipe, tests, ENGINE_VERSION)]) satisfies Files;
 	}
 	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
@@ -35,7 +40,7 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/index.ts", indexSource(surface, recipe)],
 		["src/internal/effectify.ts", `${header(recipe, "the runtime of @effectified/engine, copied verbatim")}${runtime}`],
-		["README.md", readme(surface, recipe)],
+		...docsFiles(surface, recipe, tests, ENGINE_VERSION),
 	]);
 	return files satisfies Files;
 });
@@ -460,49 +465,6 @@ function producedHandle(signatures: ReadonlyArray<Signature>, recipe: Recipe): s
 }
 
 /** The methods of handle `name` the facade wraps: all the analyzer read, less the recipe's `exclude`s. */
-function wrappedMethods(name: string, methods: Readonly<Record<string, ReadonlyArray<Signature>>>, recipe: Recipe): ReadonlyArray<string> {
-	return Object.keys(methods)
-		.filter((method) => recipe.methods[`${name}.${method}`] !== "exclude")
-		.sort();
-}
-
-/**
- * The wrapped methods of handle `name` that are `kind`: as the recipe overrides them, else as the analyzer read them
- * (async when an overload returns a promise; a stream when one returns an async iterable and none a promise).
- */
-function classified(name: string, methods: Readonly<Record<string, ReadonlyArray<Signature>>>, recipe: Recipe, kind: "async" | "stream"): ReadonlyArray<string> {
-	return wrappedMethods(name, methods, recipe).filter((method) => {
-		const override = recipe.methods[`${name}.${method}`];
-		if (override !== undefined) return override === kind;
-		const signatures = methods[method] ?? [];
-		const isAsync = signatures.some((signature) => signature.traits.includes("async"));
-		return kind === "async" ? isAsync : !isAsync && signatures.some((signature) => signature.traits.includes("stream"));
-	});
-}
-
-/**
- * The wrapped methods of handle `name` that report through a trailing callback and have no promise or iterable to
- * report through instead, with how the callback reports (`node`: error first; `done`: a call when done).
- */
-function callbackMethods(name: string, methods: Readonly<Record<string, ReadonlyArray<Signature>>>, recipe: Recipe): Readonly<Record<string, "node" | "done">> {
-	const found: Record<string, "node" | "done"> = {};
-	for (const method of wrappedMethods(name, methods, recipe)) {
-		if (recipe.methods[`${name}.${method}`] !== undefined) continue;
-		const signatures = methods[method] ?? [];
-		if (!signatures.every((signature) => signature.traits.includes("callback"))) continue;
-		const reports = signatures.find((signature) => signature.callback === "node" || signature.callback === "done")?.callback;
-		if (reports === "node" || reports === "done") found[method] = reports;
-	}
-	return found;
-}
-
-/** The properties of handle `name` the facade reads through: all the analyzer read, less `exclude`s and `upstream`. */
-function wrappedProperties(name: string, handle: Handle, recipe: Recipe): ReadonlyArray<string> {
-	return Object.keys(handle.properties)
-		.filter((property) => property !== "upstream" && recipe.methods[`${name}.${property}`] !== "exclude")
-		.sort();
-}
-
 function unionOf(names: ReadonlyArray<string>): string {
 	return names.length === 0 ? "never" : names.map((name) => JSON.stringify(name)).join(" | ");
 }
@@ -524,11 +486,11 @@ function packageJson(recipe: Recipe): string {
 			name: recipe.name,
 			// A facade's version is its upstream's: @effectified/sharp@0.35.5 wraps sharp@0.35.5.
 			version: facadeVersion(recipe),
-			description: `${recipe.package} in Effect: its async calls as Effects, its iterables as Streams, its resources scoped, its failures tagged`,
+			description: description(recipe),
 			type: "module",
 			license: "MIT",
 			exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },
-			files: ["dist", "README.md"],
+			files: ["dist", "README.md", "SKILL.md"],
 			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests" },
 			dependencies,
 			peerDependencies: { effect: `~${TOOLCHAIN.effect}` },
@@ -579,31 +541,3 @@ const TSCONFIG_BUILD = `${JSON.stringify(
 	null,
 	2,
 )}\n`;
-
-function readme(surface: Surface, recipe: Recipe): string {
-	const handles = Object.keys(recipe.handles);
-	return [
-		`# ${recipe.name}`,
-		"",
-		`[${recipe.package}](https://www.npmjs.com/package/${recipe.package}) ${recipe.version} in [Effect](https://effect.website), generated by the [effectified engine](https://github.com/effectified/engine) from its types and \`recipe.json\`.`,
-		"",
-		"- Async calls are `Effect`s, async iterables are `Stream`s, and failures are tagged errors:",
-		`  ${recipe.errors.map((error) => `\`${error.tag}\``).join(", ")}.`,
-		`- Handles it wraps: ${handles.map((name) => `\`${name}\`${recipe.handles[name]?.release === undefined ? "" : ` (scoped, released by \`${recipe.handles[name]?.release}\`)`}`).join(", ") || "none"}.`,
-		...(recipe.services.length === 0 ? [] : [`- Services: ${recipe.services.map((service) => `\`${service.name}\``).join(", ")}, each with a \`layer\`.`]),
-		`- \`Upstream\` re-exports ${recipe.package} itself, and every facade keeps its upstream object as \`.upstream\`.`,
-		"",
-		`Offered: ${recipe.exports.map((name) => `\`${name}\``).join(", ")}. Types: ${surface.types.from === "bundled" ? "bundled with the package" : `\`${surface.types.package}\``}.`,
-		"",
-		"## Install",
-		"",
-		"Released on GitHub, not npm:",
-		"",
-		"```sh",
-		`npm install --allow-remote=root ${releaseUrl(recipe)} effect`,
-		`pnpm add ${releaseUrl(recipe)} effect`,
-		`bun add ${releaseUrl(recipe)} effect`,
-		"```",
-		"",
-	].join("\n");
-}
