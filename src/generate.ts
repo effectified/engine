@@ -11,7 +11,7 @@ import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
-export const ENGINE_VERSION = "0.2.0";
+export const ENGINE_VERSION = "0.3.0";
 
 /** Pinned versions a generated package builds with; the analyzer reads upstream with the same Node types. */
 export const TOOLCHAIN ={ effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7", vitest: "5.1.1", "@effect/vitest": "4.1.5" } as const;

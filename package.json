@@ -1,6 +1,6 @@
 {
   "name": "@effectified/engine",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The effectified engine: analyzes a library's types and source, drafts a recipe, generates an Effect-native facade, and keeps it in step with upstream",
   "type": "module",
   "license": "MIT",

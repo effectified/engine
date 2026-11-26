@@ -54,7 +54,7 @@ Every step is a command: `study`, `draft`, `generate`, `reconcile`, `verify`, `t
 Released on GitHub as `v<version>`, never replaced:
 
 ```sh
-pnpm add -D https://github.com/effectified/engine/releases/download/v0.2.0/effectified-engine-0.2.0.tgz
+pnpm add -D https://github.com/effectified/engine/releases/download/v0.3.0/effectified-engine-0.3.0.tgz
 ```
 
 The package carries the `effectify` command, built to JavaScript, and the runtimes it copies into every facade (`src/runtime`). After CI passes on `main`, `release.yml` releases the version in `package.json` if it is not released yet.
@@ -67,6 +67,12 @@ The facades (15 so far: nodemailer, simple-git, sharp, puppeteer-core, bullmq, a
 
 - A web component's properties are read from upstream's types (`HTMLElementTagNameMap`), inherited ones included (Material's `disabled`): public, writable, not methods, functions or DOM nodes, not `@internal`; a member the manifest knows as the element's own state (no attribute, no description) is left out. A tag the types do not name keeps the manifest's list.
 - A facade declares the packages its emitted declarations name (`recipe.typeDependencies`, written by `reconcile`), so a strict install resolves them.
+- Interrupting a call aborts the `AbortSignal` upstream takes, as a parameter or as the `signal` field of an options object (combined with one the caller passes); a `Stream` aborts its signal when it ends. A call that takes no signal cannot be cancelled upstream: interrupting it stops waiting for it.
+- A facade handed back to upstream is unwrapped (`setFocus(editor)`, `connect(transport)`), and parameter types accept it.
+- A class whose constructor is private or that is abstract is made by its static factories, offered under the class's name (`ModelRuntime.create(...)`) when they are async or make a wrapped handle.
+- A tagged error carries the fields its upstream class declares (`status`, `body`, a numeric `code`), each with a Schema that follows its type; anything but strings, numbers, booleans and string literals is `Unknown`.
+- Every export is annotated with a type that names `typeof Upstream.X`, so its declaration never spells a type upstream does not export. A lifted method whose type cannot be named that way keeps its derived type (`recipe.unlifted`), and loses its type parameters.
+- Synchronous methods stay synchronous: one that throws throws. A function-valued field is read as a method (an optional one stays a property).
 
 - A generic method whose signature names a type upstream does not export is typed through a call (`Effectify.lifted`), which keeps its type parameters: puppeteer's `page.$eval("input#name", (input) => input.value)` is an `Effect<string>`. When TypeScript cannot infer through the call (type parameters whose defaults depend on each other, `recipe.unlifted`), the method keeps the derived type, its type parameters as their constraints. An overloaded generic method keeps its written-out overloads, or the derived type.
 - Event payloads are typed when the emitter keys its listeners by name (`on<U extends keyof Listeners>(event: U, listener: Listeners[U])`, as bullmq and puppeteer do): `events.Worker.completed(worker)` is a `Stream` of `[job, result, previous]`. Other emitters give `ReadonlyArray<unknown>`.
