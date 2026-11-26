@@ -205,6 +205,7 @@ class SurfaceReader {
 			...(typeParameters === undefined ? {} : { typeParameters }),
 			parameters,
 			trailingCallback: this.lastIsFunction(signature),
+			...(traits.includes("callback") ? { callback: this.callbackKind(signature) } : {}),
 			returns,
 			...(resolved === undefined ? {} : { resolves: this.print(resolved) }),
 			...(handle === undefined ? {} : { handle }),
@@ -278,6 +279,24 @@ class SurfaceReader {
 		const last = signature.getParameters().at(-1);
 		const type = last === undefined ? undefined : this.checker.getTypeOfSymbol(last);
 		return type !== undefined && this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call).length > 0;
+	}
+
+	/**
+	 * What a call's trailing callback reports: an error first (`node`), the end of the work by a parameterless
+	 * `callback`, `done` or `next` (`done`), or nothing of the call's result (`handler`).
+	 */
+	private callbackKind(signature: TsSignature): "node" | "done" | "handler" {
+		const last = signature.getParameters().at(-1);
+		const type = last === undefined ? undefined : this.checker.getTypeOfSymbol(last);
+		const called = type === undefined ? undefined : this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call)[0];
+		const parameters = called?.getParameters() ?? [];
+		const first = parameters[0];
+		const firstType = first === undefined ? undefined : this.checker.getTypeOfSymbol(first);
+		if (first !== undefined && (/^(err|error|e|ex)$/i.test(first.name) || (firstType !== undefined && /\bError\b/.test(this.print(firstType))))) {
+			return "node";
+		}
+		if (parameters.length === 0 && /^(callback|cb|done|next|complete|oncomplete|ondone)$/i.test(last?.name ?? "")) return "done";
+		return "handler";
 	}
 
 	/**

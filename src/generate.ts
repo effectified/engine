@@ -107,6 +107,8 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		push(
 			`/** The methods of \`${name}\` the facade wraps: those ${recipe.package} declares itself. */`,
 			`type ${name}Methods = ${methods.length === 0 ? "never" : methods.map((method) => JSON.stringify(method)).join(" | ")};`,
+			`/** The methods of \`${name}\` that report through a trailing callback: Effects of what it reports. */`,
+			`type ${name}Callbacks = ${unionOf(Object.keys(callbackMethods(name, handle.methods, recipe)))};`,
 			`/** The properties of \`${name}\` the facade reads through. */`,
 			`type ${name}Properties = ${unionOf(wrappedProperties(name, handle, recipe))};`,
 			"",
@@ -147,6 +149,7 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 			`\t\t\tasync: ${record(asyncMethods.map((method) => `${JSON.stringify(method)}: true`))} satisfies Effectify.AsyncSpec<${picked}>,`,
 			`\t\t\tstream: ${record(streamMethods.map((method) => `${JSON.stringify(method)}: true`))} satisfies Effectify.StreamSpec<${picked}, Handles>,`,
 			`\t\t\treturns: ${record(returns)},`,
+			`\t\t\tcallback: ${record(Object.entries(callbackMethods(name, handle.methods, recipe)).map(([method, kind]) => `${JSON.stringify(method)}: ${JSON.stringify(kind)}`))} satisfies Record<${name}Callbacks, "node" | "done">,`,
 			`\t\t\tproperties: ${record(
 				wrappedProperties(name, handle, recipe).map((property) => {
 					const held = handle.properties[property]?.handle;
@@ -222,7 +225,7 @@ function keyedListeners(handle: Handle | undefined): boolean {
  * `Upstream.`, its trailing callback left out), unless the recipe keeps it derived.
  */
 function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<string>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
-	const derived = `Effectify.Effectified<${handle.typeRef}, Failure, Handles, ${name}Methods, ${name}Properties>`;
+	const derived = `Effectify.Effectified<${handle.typeRef}, Failure, Handles, ${name}Methods, ${name}Properties, ${name}Callbacks>`;
 	// A generic method kept derived (its written-out signature names types upstream does not export) with one
 	// signature is lifted: typed through a call, which keeps its type parameters. Overloads would keep only the last.
 	const lifted = methods.filter((method) => {
@@ -473,6 +476,22 @@ function classified(name: string, methods: Readonly<Record<string, ReadonlyArray
 		const isAsync = signatures.some((signature) => signature.traits.includes("async"));
 		return kind === "async" ? isAsync : !isAsync && signatures.some((signature) => signature.traits.includes("stream"));
 	});
+}
+
+/**
+ * The wrapped methods of handle `name` that report through a trailing callback and have no promise or iterable to
+ * report through instead, with how the callback reports (`node`: error first; `done`: a call when done).
+ */
+function callbackMethods(name: string, methods: Readonly<Record<string, ReadonlyArray<Signature>>>, recipe: Recipe): Readonly<Record<string, "node" | "done">> {
+	const found: Record<string, "node" | "done"> = {};
+	for (const method of wrappedMethods(name, methods, recipe)) {
+		if (recipe.methods[`${name}.${method}`] !== undefined) continue;
+		const signatures = methods[method] ?? [];
+		if (!signatures.every((signature) => signature.traits.includes("callback"))) continue;
+		const reports = signatures.find((signature) => signature.callback === "node" || signature.callback === "done")?.callback;
+		if (reports === "node" || reports === "done") found[method] = reports;
+	}
+	return found;
 }
 
 /** The properties of handle `name` the facade reads through: all the analyzer read, less `exclude`s and `upstream`. */

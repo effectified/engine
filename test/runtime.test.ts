@@ -135,3 +135,62 @@ describe("effectify", () => {
 		}),
 	);
 });
+
+/** An upstream with callback-only methods: one reporting error first, one called when done, one taking a handler. */
+class Terminal {
+	written: Array<string> = [];
+	handler: ((key: string) => boolean) | undefined;
+	write(data: string, callback?: () => void): void {
+		setTimeout(() => {
+			this.written.push(data);
+			callback?.();
+		}, 1);
+	}
+	read(path: string, callback: (error: Error | null, data: string) => void): void {
+		setTimeout(() => (path === "missing" ? callback(Object.assign(new Error("no such file"), { code: "ENOENT" }), "") : callback(null, `<${path}>`)), 1);
+	}
+	attachKeyHandler(handler: (key: string) => boolean): void {
+		this.handler = handler;
+	}
+}
+
+type TerminalMethods = "write" | "read" | "attachKeyHandler";
+interface TerminalFacade extends Effectified<Terminal, TestError, never, TerminalMethods, never, "write" | "read"> {}
+
+const terminal = (upstream = new Terminal()) =>
+	effectify(
+		upstream,
+		{ name: "Terminal", spec: { methods: ["write", "read", "attachKeyHandler"], async: {}, callback: { write: "done", read: "node" } } },
+		{},
+		classify,
+	) as unknown as TerminalFacade;
+
+describe("callbacks", () => {
+	it("types a reporting callback's method as an Effect of what it reports, and a handler as upstream types it", () => {
+		expectTypeOf(terminal().write).toEqualTypeOf<(data: string) => Effect.Effect<void, TestError>>();
+		expectTypeOf(terminal().read).toEqualTypeOf<(path: string) => Effect.Effect<string, TestError>>();
+		expectTypeOf(terminal().attachKeyHandler).toEqualTypeOf<(handler: (key: string) => boolean) => void>();
+	});
+
+	it.live("completes a `done` method when upstream calls back", () =>
+		Effect.gen(function* () {
+			const upstream = new Terminal();
+			yield* terminal(upstream).write("hello");
+			expect(upstream.written).toStrictEqual(["hello"]);
+		}),
+	);
+
+	it.live("succeeds a `node` method with the value after the error, and fails with its error classified", () =>
+		Effect.gen(function* () {
+			expect(yield* terminal().read("a.txt")).toBe("<a.txt>");
+			const error = yield* Effect.flip(terminal().read("missing"));
+			expect(error).toMatchObject({ _tag: "TestError", operation: "Terminal.read", code: "ENOENT" });
+		}),
+	);
+
+	it("passes a handler through", () => {
+		const upstream = new Terminal();
+		terminal(upstream).attachKeyHandler((key) => key === "q");
+		expect(upstream.handler?.("q")).toBe(true);
+	});
+});

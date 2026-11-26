@@ -23,6 +23,12 @@ export const Signature = Schema.Struct({
 	parameters: Schema.Array(Schema.Struct({ name: Schema.String, type: Schema.String, optional: Schema.Boolean, rest: Schema.Boolean })),
 	/** Whether the last parameter is a callback (the facade's own signatures leave it out). */
 	trailingCallback: Schema.Boolean,
+	/**
+	 * What a trailing callback of a call that returns nothing is: `node`, called with an error first and then the
+	 * result; `done`, called with nothing when the work is done (xterm's `write(data, callback)`); or `handler`, an
+	 * argument like any other that upstream calls for its own reasons (a key handler).
+	 */
+	callback: Schema.optional(Schema.Literals(["node", "done", "handler"])),
 	returns: Schema.String,
 	/** For an async signature, the type the promise resolves to. */
 	resolves: Schema.optional(Schema.String),
