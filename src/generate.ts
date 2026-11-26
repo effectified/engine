@@ -28,7 +28,7 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 	}
 	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
-		["package.json", packageJson(surface, recipe)],
+		["package.json", packageJson(recipe)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/index.ts", indexSource(surface, recipe)],
@@ -514,8 +514,8 @@ function lowerFirst(name: string): string {
 	return `${name.charAt(0).toLowerCase()}${name.slice(1)}`;
 }
 
-function packageJson(surface: Surface, recipe: Recipe): string {
-	const dependencies: Record<string, string> = { ...surface.typeDependencies, [recipe.package]: recipe.version };
+function packageJson(recipe: Recipe): string {
+	const dependencies: Record<string, string> = { ...recipe.typeDependencies, [recipe.package]: recipe.version };
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	return `${JSON.stringify(
 		{

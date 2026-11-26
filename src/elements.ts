@@ -29,7 +29,13 @@ export const manifestPath = Effect.fn("manifestPath")(function* (workspace: Work
 	return typeof field === "string" ? field.replace(/^\.\//, "") : undefined;
 });
 
-/** Reads the elements a package's manifest declares, sorted by tag. */
+/**
+ * What a manifest says of each member an element has, through its ancestry, by tag and name: whether it is API (it
+ * has an attribute or a description) or the element's own state (neither: Web Awesome's `valueHasChanged`).
+ */
+export type Documented = ReadonlyMap<string, ReadonlyMap<string, boolean>>;
+
+/** Reads the elements a package's manifest declares, sorted by tag, and what it says of their members. */
 export const readElements = Effect.fn("readElements")(function* (workspace: Workspace, manifest: string) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
@@ -57,6 +63,7 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 		),
 	);
 	const elements: Array<Element> = [];
+	const documented = new Map<string, ReadonlyMap<string, boolean>>();
 	const manifestDirectory = path.dirname(manifest);
 	for (const module of modules) {
 		for (const declaration of asArray(field(module, "declarations"))) {
@@ -64,6 +71,13 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 			if (typeof tag !== "string" || field(declaration, "customElement") !== true) continue;
 			const modulePath = definitions.get(tag) ?? String(field(module, "path"));
 			const chain = ancestry(declaration, classes, workspace.target.package);
+			const members = new Map<string, boolean>();
+			for (const member of chain.flatMap((link) => asArray(field(link, "members")))) {
+				const name = String(field(member, "name"));
+				const api = field(member, "attribute") !== undefined || String(field(member, "description") ?? "").trim() !== "";
+				members.set(name, (members.get(name) ?? false) || api);
+			}
+			documented.set(tag, members);
 			elements.push({
 				tag,
 				name: "",
@@ -75,9 +89,10 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 		}
 	}
 	const prefix = commonPrefix(elements.map((element) => element.tag));
-	return elements
-		.map((element) => ({ ...element, name: pascal(element.tag.slice(prefix.length)) }))
-		.sort((a, b) => a.tag.localeCompare(b.tag));
+	return {
+		elements: elements.map((element) => ({ ...element, name: pascal(element.tag.slice(prefix.length)) })).sort((a, b) => a.tag.localeCompare(b.tag)),
+		documented: documented as Documented,
+	};
 });
 
 /**

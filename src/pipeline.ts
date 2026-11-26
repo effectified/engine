@@ -5,6 +5,7 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { analyze } from "./analyze.ts";
 import { manifestPath, readElements } from "./elements.ts";
+import { typedElements } from "./element-types.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
 import { runCommand } from "./command.ts";
 import { generate, releaseUrl, writeFiles } from "./generate.ts";
@@ -12,7 +13,7 @@ import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, type Rec
 import { type Scan, scan } from "./scan.ts";
 import { decodeSurface, type Surface } from "./surface.ts";
 import { resolveTarget } from "./target.ts";
-import { prepareWorkspace, type Workspace } from "./workspace.ts";
+import { prepareWorkspace } from "./workspace.ts";
 
 /** A target's directory and the files the steps keep in it. */
 export interface TargetFiles {
@@ -47,9 +48,8 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 	const workspace = yield* prepareWorkspace(target, cache);
 	const analyzed = yield* analyze(workspace);
 	const manifest = yield* manifestPath(workspace);
-	const withElements = manifest === undefined ? analyzed : { ...analyzed, elements: yield* readElements(workspace, manifest) };
-	const typeDependencies = yield* referencedPackages(workspace);
-	const surface = Object.keys(typeDependencies).length === 0 ? withElements : { ...withElements, typeDependencies };
+	const read = manifest === undefined ? undefined : yield* readElements(workspace, manifest);
+	const surface = read === undefined ? analyzed : { ...analyzed, elements: yield* typedElements(workspace, read.elements, read.documented) };
 	const found = yield* scan(workspace);
 	const files = yield* targetFiles(out, target.package);
 	const readme = yield* fs.readFileString(path.join(workspace.packageDirectory, "README.md")).pipe(Effect.orElseSucceed(() => ""));
@@ -57,37 +57,6 @@ export const study = Effect.fn("study")(function* (input: string, cache: string,
 	yield* fs.writeFileString(files.surface, json(surface));
 	yield* fs.writeFileString(files.scan, json(found));
 	return { surface, scan: found, readme, files, workspace };
-});
-
-/**
- * The packages upstream's declarations import (`typed-query-selector/parser` in puppeteer's `.d.ts`), with the range
- * upstream depends on each: the facade's own declarations name them when it keeps an upstream type that refers to
- * one, so it declares them too, or a strict install (pnpm) could not resolve them.
- */
-const referencedPackages = Effect.fn("referencedPackages")(function* (workspace: Workspace) {
-	const fs = yield* FileSystem.FileSystem;
-	const path = yield* Path.Path;
-	// Trust boundary: upstream's package.json, read as untyped JSON.
-	const manifest: unknown = JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json")));
-	const ranges = (key: string): Record<string, unknown> => {
-		const value = typeof manifest === "object" && manifest !== null ? (manifest as Record<string, unknown>)[key] : undefined;
-		return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-	};
-	// Dependencies only: they are installed with upstream anyway; a peer may be optional (bullmq's `redis`).
-	const declared = ranges("dependencies");
-	const found: Record<string, string> = {};
-	const files = (yield* fs.readDirectory(workspace.packageDirectory, { recursive: true })).filter(
-		(file) => file.endsWith(".d.ts") && !file.split(path.sep).includes("node_modules"),
-	);
-	for (const file of files) {
-		const text = yield* fs.readFileString(path.join(workspace.packageDirectory, file));
-		for (const match of text.matchAll(/(?:from\s+|import\(\s*)["']((?:@[^/"']+\/)?[^./"'][^/"']*)/g)) {
-			const name = match[1] ?? "";
-			const range = declared[name];
-			if (typeof range === "string") found[name] = range;
-		}
-	}
-	return Object.fromEntries(Object.entries(found).sort(([a], [b]) => a.localeCompare(b)));
 });
 
 /** Drafts the recipe into `recipe.json`, keeping every decision an agent or a person made in the one already there. */
@@ -137,7 +106,13 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 	const kept: Array<string> = [];
 	for (let round = 1; round <= MAX_ROUNDS; round++) {
 		const check = yield* typeCheck(files);
-		if (check.exitCode === 0) return { rounds: round, overrides: decided, derived: kept };
+		if (check.exitCode === 0) {
+			// The declarations compile; those they emit may name packages the facade does not declare yet.
+			if (!(yield* settleTypeDependencies(files))) return { rounds: round, overrides: decided, derived: kept };
+			yield* build(files);
+			yield* install(files);
+			continue;
+		}
 		const sources = new Map<string, string>();
 		for (const [, file] of check.output.matchAll(/^([\w./-]+\.ts)\(\d+,\d+\): error/gm)) {
 			if (file !== undefined && !sources.has(file)) sources.set(file, yield* fs.readFileString(path.join(files.package, file)).pipe(Effect.orElseSucceed(() => "")));
@@ -331,6 +306,38 @@ const install = Effect.fn("install")(function* (files: TargetFiles) {
 	const result = yield* runCommand("npm", ["install", "--ignore-scripts", "--allow-remote=all", "--no-audit", "--no-fund", "--loglevel=error"], files.package);
 	if (result.exitCode !== 0) return yield* new StepError({ step: "npm install", reason: tail(result.output) });
 });
+
+/**
+ * Emits the facade's declarations and records in the recipe the packages they import that the facade does not
+ * declare (puppeteer's `.d.ts` name `typed-query-selector`), at the range upstream depends on each: under a strict
+ * install (pnpm) a declaration can only resolve what its own package declares. Only upstream's dependencies count:
+ * they are installed with it anyway. Whether the recipe changed.
+ */
+const settleTypeDependencies = Effect.fn("settleTypeDependencies")(function* (files: TargetFiles) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const out = yield* fs.makeTempDirectoryScoped();
+	const emitted = yield* runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json", "--outDir", out, "--pretty", "false"], files.package);
+	if (emitted.exitCode !== 0) return yield* new StepError({ step: "declarations", reason: tail(emitted.output) });
+	const recipe = yield* readRecipe(files);
+	// Trust boundary: package manifests are files, read as untyped JSON.
+	const manifest = (file: string) => fs.readFileString(file).pipe(Effect.map((text): { readonly dependencies?: Record<string, string> } => JSON.parse(text)));
+	const own = yield* manifest(path.join(files.package, "package.json"));
+	const upstream = yield* manifest(path.join(files.package, "node_modules", recipe.package, "package.json"));
+	const found: Record<string, string> = {};
+	for (const file of (yield* fs.readDirectory(out, { recursive: true })).filter((name) => name.endsWith(".d.ts"))) {
+		const text = yield* fs.readFileString(path.join(out, file));
+		for (const match of text.matchAll(/(?:from\s+|import\(\s*)["']((?:@[^/"']+\/)?[^./"'][^/"']*)/g)) {
+			const name = match[1] ?? "";
+			const range = upstream.dependencies?.[name];
+			if (range !== undefined && own.dependencies?.[name] === undefined) found[name] = range;
+		}
+	}
+	if (Object.keys(found).length === 0) return false;
+	const typeDependencies = Object.fromEntries(Object.entries({ ...recipe.typeDependencies, ...found }).sort(([a], [b]) => a.localeCompare(b)));
+	yield* fs.writeFileString(files.recipe, json({ ...recipe, typeDependencies }));
+	return true;
+}, Effect.scoped);
 
 const typeCheck = (files: TargetFiles) =>
 	runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--pretty", "false"], files.package);

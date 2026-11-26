@@ -74,6 +74,9 @@ Five famous libraries without Effect support (none on npm, none in Effect itself
 
 ## Known limits
 
+- A web component's properties are read from upstream's types (`HTMLElementTagNameMap`), inherited ones included (Material's `disabled`): public, writable, not methods, functions or DOM nodes, not `@internal`; a member the manifest knows as the element's own state (no attribute, no description) is left out. A tag the types do not name keeps the manifest's list.
+- A facade declares the packages its emitted declarations name (`recipe.typeDependencies`, written by `reconcile`), so a strict install resolves them.
+
 - A generic method whose signature names a type upstream does not export is typed through a call (`Effectify.lifted`), which keeps its type parameters: puppeteer's `page.$eval("input#name", (input) => input.value)` is an `Effect<string>`. When TypeScript cannot infer through the call (type parameters whose defaults depend on each other, `recipe.unlifted`), the method keeps the derived type, its type parameters as their constraints. An overloaded generic method keeps its written-out overloads, or the derived type.
 - Event payloads are typed when the emitter keys its listeners by name (`on<U extends keyof Listeners>(event: U, listener: Listeners[U])`, as bullmq and puppeteer do): `events.Worker.completed(worker)` is a `Stream` of `[job, result, previous]`. Other emitters give `ReadonlyArray<unknown>`.
 - A method without a promise overload whose trailing callback reports its result is an `Effect` too: the analyzer reads the callback's shape (`node`: an error first, then the value; `done`: a parameterless `callback`, `done` or `next`), and the facade completes when upstream calls back (nodemailer's `Transport.send`). Any other callback is an argument like the rest (a key handler), and the method keeps upstream's type.

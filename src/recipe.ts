@@ -93,6 +93,11 @@ export const Recipe = Schema.Struct({
 	 * of the same upstream is released as `<version>+<revision>`, since a release is never replaced.
 	 */
 	revision: Schema.optional(Schema.Number),
+	/**
+	 * Packages the facade's declarations name (`import("typed-query-selector/parser")` in a kept upstream type), at
+	 * the range upstream depends on each: `reconcile` finds them in the emitted declarations.
+	 */
+	typeDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 	/** Packages the facade's own tests need (a Redis client, say), added to its devDependencies by exact version. */
 	testDependencies: Schema.Record(Schema.String, Schema.String),
 	decisions: Schema.Array(Decision),
@@ -202,6 +207,8 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		methods: previous?.methods ?? {},
 		derived: previous?.derived ?? [],
 		testDependencies: previous?.testDependencies ?? {},
+		...(previous?.unlifted === undefined ? {} : { unlifted: previous.unlifted }),
+		...(previous?.typeDependencies === undefined ? {} : { typeDependencies: previous.typeDependencies }),
 		// A new upstream version starts again at revision 1.
 		...(previous?.revision !== undefined && previous.version === surface.version ? { revision: previous.revision } : {}),
 		...(ui === undefined ? {} : { ui }),
