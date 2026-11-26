@@ -47,4 +47,4 @@ const kinds = {
 } satisfies Record<string, Effectify.HandleKind>;
 
 /** `sharp.default` in facade form: every call is an Effect of a Sharp. */
-export const sharp = Effectify.entry<typeof Upstream.default, Failure, Handles>(Upstream.default, "default", kinds.Sharp, kinds, classify);
+export const sharp: Effectify.EffectFunction<typeof Upstream.default, Failure, Handles> = Effectify.entry<typeof Upstream.default, Failure, Handles>(Upstream.default, "default", kinds.Sharp, kinds, classify);

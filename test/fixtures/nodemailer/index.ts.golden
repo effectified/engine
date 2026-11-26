@@ -32,16 +32,14 @@ type MailCallbacks = never;
 type MailProperties = "dkim" | "getSocket" | "logger" | "meta" | "options" | "transporter";
 
 /** A nodemailer `Mail`: its async methods are Effects, its async iterables Streams, the handles it returns facades. */
-/** Types only: a Mail whose generic methods `liftedMail` types; neither is read at run time. */
+/** Types only: a Mail whose generic methods the `liftedMail_*` below type; none is read at run time. */
 declare const instanceOfMail: Upstream.Mail<any, any>;
-const liftedMail = () => ({
-	get: Effectify.lifted<Failure, Handles>()(instanceOfMail.get), // lifted: Mail.get
-	set: Effectify.lifted<Failure, Handles>()(instanceOfMail.set), // lifted: Mail.set
-});
+const liftedMail_get = () => Effectify.lifted<Failure, Handles>()(instanceOfMail.get); // lifted: Mail.get
+const liftedMail_set = () => Effectify.lifted<Failure, Handles>()(instanceOfMail.set); // lifted: Mail.set
 
 export interface Mail extends Omit<Effectify.Effectified<Upstream.Mail<any, any>, Failure, Handles, MailMethods, MailProperties, MailCallbacks>, "get" | "set"> {
-	readonly get: ReturnType<typeof liftedMail>["get"]; // lifted: Mail.get
-	readonly set: ReturnType<typeof liftedMail>["set"]; // lifted: Mail.set
+	readonly get: ReturnType<typeof liftedMail_get>; // lifted: Mail.get
+	readonly set: ReturnType<typeof liftedMail_set>; // lifted: Mail.set
 }
 
 /** The methods of `Transport` the facade wraps: those nodemailer declares itself. */
@@ -103,10 +101,10 @@ const kinds = {
 } satisfies Record<string, Effectify.HandleKind>;
 
 /** `nodemailer.createTransport` in facade form: every call is an Effect of a Mail. */
-export const createTransport = Effectify.entry<typeof Upstream.createTransport, Failure, Handles>(Upstream.createTransport, "createTransport", kinds.Mail, kinds, classify, { signal: { index: 1, property: "signal" } });
+export const createTransport: Effectify.EffectFunction<typeof Upstream.createTransport, Failure, Handles> = Effectify.entry<typeof Upstream.createTransport, Failure, Handles>(Upstream.createTransport, "createTransport", kinds.Mail, kinds, classify, { signal: { index: 1, property: "signal" } });
 
 /** `nodemailer.createTestAccount` in facade form: every call is an Effect. */
-export const createTestAccount = Effectify.entry<typeof Upstream.createTestAccount, Failure, Handles>(Upstream.createTestAccount, "createTestAccount", undefined, kinds, classify);
+export const createTestAccount: Effectify.EffectFunction<typeof Upstream.createTestAccount, Failure, Handles> = Effectify.entry<typeof Upstream.createTestAccount, Failure, Handles>(Upstream.createTestAccount, "createTestAccount", undefined, kinds, classify);
 
 /** A nodemailer `Mail` as a service; `layer` provides the one `make` acquires (`createTransport` in facade form), released with the layer. */
 export class NodemailerMail extends Context.Service<NodemailerMail, Mail>()("@effectified/nodemailer/NodemailerMail") {

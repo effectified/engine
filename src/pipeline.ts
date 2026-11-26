@@ -106,13 +106,18 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 	const decided: Record<string, MethodOverride> = {};
 	const kept: Array<string> = [];
 	for (let round = 1; round <= MAX_ROUNDS; round++) {
-		const check = yield* typeCheck(files);
+		let check = yield* typeCheck(files);
 		if (check.exitCode === 0) {
-			// The declarations compile; those they emit may name packages the facade does not declare yet.
-			if (!(yield* settleTypeDependencies(files))) return { rounds: round, overrides: decided, derived: kept };
-			yield* build(files);
-			yield* install(files);
-			continue;
+			// The package compiles; its declarations may not (a lifted type naming what upstream does not export),
+			// and those they emit may name packages the facade does not declare yet.
+			const emitted = yield* settleTypeDependencies(files);
+			if (emitted.kind === "settled") return { rounds: round, overrides: decided, derived: kept };
+			if (emitted.kind === "changed") {
+				yield* build(files);
+				yield* install(files);
+				continue;
+			}
+			check = emitted.diagnostics;
 		}
 		const sources = new Map<string, string>();
 		for (const [, file] of check.output.matchAll(/^([\w./-]+\.ts)\(\d+,\d+\): error/gm)) {
@@ -329,14 +334,14 @@ const install = Effect.fn("install")(function* (files: TargetFiles) {
  * Emits the facade's declarations and records in the recipe the packages they import that the facade does not
  * declare (puppeteer's `.d.ts` name `typed-query-selector`), at the range upstream depends on each: under a strict
  * install (pnpm) a declaration can only resolve what its own package declares. Only upstream's dependencies count:
- * they are installed with it anyway. Whether the recipe changed.
+ * they are installed with it anyway. The emit's diagnostics when it failed, else whether the recipe changed.
  */
 const settleTypeDependencies = Effect.fn("settleTypeDependencies")(function* (files: TargetFiles) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	const out = yield* fs.makeTempDirectoryScoped();
 	const emitted = yield* runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json", "--outDir", out, "--pretty", "false"], files.package);
-	if (emitted.exitCode !== 0) return yield* new StepError({ step: "declarations", reason: tail(emitted.output) });
+	if (emitted.exitCode !== 0) return { kind: "failed", diagnostics: emitted } satisfies Emitted;
 	const recipe = yield* readRecipe(files);
 	// Trust boundary: package manifests are files, read as untyped JSON.
 	const manifest = (file: string) => fs.readFileString(file).pipe(Effect.map((text): { readonly dependencies?: Record<string, string> } => JSON.parse(text)));
@@ -351,11 +356,17 @@ const settleTypeDependencies = Effect.fn("settleTypeDependencies")(function* (fi
 			if (range !== undefined && own.dependencies?.[name] === undefined) found[name] = range;
 		}
 	}
-	if (Object.keys(found).length === 0) return false;
+	if (Object.keys(found).length === 0) return { kind: "settled" } satisfies Emitted;
 	const typeDependencies = Object.fromEntries(Object.entries({ ...recipe.typeDependencies, ...found }).sort(([a], [b]) => a.localeCompare(b)));
 	yield* fs.writeFileString(files.recipe, json({ ...recipe, typeDependencies }));
-	return true;
+	return { kind: "changed" } satisfies Emitted;
 }, Effect.scoped);
+
+/** What emitting a facade's declarations found: nothing to change, type dependencies added, or diagnostics. */
+type Emitted =
+	| { readonly kind: "settled" }
+	| { readonly kind: "changed" }
+	| { readonly kind: "failed"; readonly diagnostics: { readonly exitCode: number; readonly output: string } };
 
 const typeCheck = (files: TargetFiles) =>
 	runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--pretty", "false"], files.package);

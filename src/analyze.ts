@@ -9,6 +9,7 @@ import {
 	type Checker,
 	type Emitter,
 	NodeBuilderFlags,
+	type NodeHandle,
 	SignatureKind,
 	SymbolFlags,
 	type Signature as TsSignature,
@@ -127,11 +128,18 @@ class SurfaceReader {
 			const error = instance !== undefined && this.isError(instance);
 			const handle = instance === undefined || error ? undefined : this.handleOf(instance, `InstanceType<${reference}>`, 0);
 			const base = instance === undefined ? undefined : this.baseClass(instance);
+			// A private constructor is still a construct signature to the checker; such a class is made by its statics.
+			// An abstract class is never constructed either: its instances come from its subclasses or statics.
+			const open = this.hasModifier(symbol.valueDeclaration, SyntaxKind.AbstractKeyword)
+				? []
+				: constructors.filter((signature) => this.isPublicNode(signature.declaration));
+			const statics = error ? {} : this.readStatics(type, reference);
 			return {
 				kind: "class",
 				name: symbol.name,
 				handle: handle ?? symbol.name,
-				constructors: constructors.map((signature) => this.readSignature(signature, reference, 0)),
+				constructors: open.map((signature) => this.readSignature(signature, reference, 0)),
+				...(Object.keys(statics).length === 0 ? {} : { statics }),
 				error,
 				...(base === undefined ? {} : { base }),
 			};
@@ -362,12 +370,33 @@ class SurfaceReader {
 		return base !== undefined && this.isTargetDeclaration(base) ? base.name : undefined;
 	}
 
+	/** A class's public static methods the target declares, each signature read like a method's. */
+	private readStatics(classType: Type, reference: string): Record<string, ReadonlyArray<Signature>> {
+		const statics: Record<string, ReadonlyArray<Signature>> = {};
+		for (const property of this.checker.getPropertiesOfType(classType)) {
+			if (property.name === "prototype" || property.name.startsWith("_") || property.name.startsWith("#") || property.name.startsWith("__@")) continue;
+			if (!this.isTargetDeclaration(property) || !this.isPublic(property)) continue;
+			const propertyType = this.checker.getTypeOfSymbol(property);
+			const signatures = propertyType === undefined ? [] : this.checker.getSignaturesOfType(propertyType, SignatureKind.Call);
+			if (signatures.length === 0) continue;
+			statics[property.name] = signatures.map((signature) => this.readSignature(signature, `${reference}[${JSON.stringify(property.name)}]`, 0));
+		}
+		return statics;
+	}
+
 	private isPublic(symbol: TsSymbol): boolean {
-		return symbol.declarations.every((declaration) => {
-			// A resolved declaration is a class member or a signature; only members carry `modifiers`.
-			const node = declaration.resolve() as { readonly modifiers?: ReadonlyArray<{ readonly kind: SyntaxKind }> } | undefined;
-			return !(node?.modifiers ?? []).some((modifier) => modifier.kind === SyntaxKind.PrivateKeyword || modifier.kind === SyntaxKind.ProtectedKeyword);
-		});
+		return symbol.declarations.every((declaration) => this.isPublicNode(declaration));
+	}
+
+	/** Whether a declaration has no `private` or `protected` modifier; one without a declaration (implicit) is public. */
+	private isPublicNode(declaration: NodeHandle | undefined): boolean {
+		return !this.hasModifier(declaration, SyntaxKind.PrivateKeyword) && !this.hasModifier(declaration, SyntaxKind.ProtectedKeyword);
+	}
+
+	private hasModifier(declaration: NodeHandle | undefined, kind: SyntaxKind): boolean {
+		// A resolved declaration is a class, a class member or a signature; only the first two carry `modifiers`.
+		const node = declaration?.resolve() as { readonly modifiers?: ReadonlyArray<{ readonly kind: SyntaxKind }> } | undefined;
+		return (node?.modifiers ?? []).some((modifier) => modifier.kind === kind);
 	}
 
 	private isTargetDeclaration(symbol: TsSymbol): boolean {

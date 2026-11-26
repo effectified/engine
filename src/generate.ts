@@ -264,13 +264,13 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 		...(lifted.length === 0
 			? []
 			: [
-					`/** Types only: a ${name} whose generic methods \`lifted${name}\` types; neither is read at run time. */`,
+					`/** Types only: a ${name} whose generic methods the \`lifted${name}_*\` below type; none is read at run time. */`,
 					`declare const instanceOf${name}: ${handle.typeRef};`,
-					`const lifted${name} = () => ({`,
+					// One declaration per method, its line marked: a type of one that its declaration cannot name (a type
+					// upstream does not export) fails that line alone, and `reconcile` keeps that method derived.
 					...lifted.map(
-						(method) => `\t${memberName(method)}: Effectify.lifted<Failure, Handles>()(instanceOf${name}${propertyAccess(method)}), // lifted: ${name}.${method}`,
+						(method) => `const ${liftedName(name, method)} = () => Effectify.lifted<Failure, Handles>()(instanceOf${name}${propertyAccess(method)}); // lifted: ${name}.${method}`,
 					),
-					"});",
 					"",
 				]),
 		`export interface ${name} extends Omit<${derived}, ${[...explicit, ...lifted].map((method) => JSON.stringify(method)).join(" | ")}> {`,
@@ -279,9 +279,14 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 				.filter((signature) => !signature.traits.includes("callback"))
 				.map((signature) => `\t${memberName(method)}${explicitSignature(name, signature, qualify, "method")}; // explicit: ${name}.${method}`),
 		),
-		...lifted.map((method) => `\treadonly ${memberName(method)}: ReturnType<typeof lifted${name}>[${JSON.stringify(method)}]; // lifted: ${name}.${method}`),
+		...lifted.map((method) => `\treadonly ${memberName(method)}: ReturnType<typeof ${liftedName(name, method)}>; // lifted: ${name}.${method}`),
 		"}",
 	];
+}
+
+/** The declaration that types one lifted method: `liftedPage_waitForFunction`. */
+function liftedName(handle: string, method: string): string {
+	return `lifted${handle}_${method.replace(/[^\w$]/g, "_")}`;
 }
 
 /** One upstream signature in facade form, written out: `<T = Upstream.X>(params): Effect...`. */
@@ -372,9 +377,12 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 				`}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 			];
 		}
+		// Annotated, so its declaration names `typeof Upstream.<name>`, not the types its signature expands to, which
+		// upstream may not export.
+		const type = `${instantiated(item.name, kept, surface)}, Failure, Handles`;
 		return [
 			doc,
-			`export const ${facadeName} = Effectify.entry<${instantiated(item.name, kept, surface)}, Failure, Handles>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
+			`export const ${facadeName}: Effectify.EffectFunction<${type}> = Effectify.entry<${type}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 		];
 	}
 	if (item.kind === "class" && recipe.handles[item.handle] !== undefined) {
@@ -382,6 +390,7 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 		const doc = `/** Constructs a ${recipe.package} \`${item.name}\` as an Effect of its facade${recipe.handles[item.handle]?.release === undefined ? "" : ", released when the scope closes"}. */`;
 		const operation = JSON.stringify(`new ${item.name}`);
 		const options = entryOptions(item.constructors);
+		const statics = staticsSource(item, surface, recipe);
 		if (handle !== undefined && isExplicit(item.name, item.constructors, recipe)) {
 			const instance = { resolves: handle.typeRef, traits: ["async" as const] };
 			return [
@@ -391,14 +400,56 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 					(signature) => `\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, "export")}; // explicit: ${item.name}`,
 				),
 				`}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
+				...(statics.length === 0 ? [] : ["", ...statics]),
 			];
 		}
+		if (item.constructors.length === 0) return statics;
+		const type = `${instantiated(item.name, item.constructors, surface)}, Failure, Handles`;
 		return [
 			doc,
-			`export const make${item.name} = Effectify.construct<${instantiated(item.name, item.constructors, surface)}, Failure, Handles>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
+			`export const make${item.name}: Effectify.Construct<${type}> = Effectify.construct<${type}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
+			...(statics.length === 0 ? [] : ["", ...statics]),
 		];
 	}
 	return [`// ${item.name} is offered by the recipe but is no function or wrapped class; use Upstream.${item.name}.`];
+}
+
+/**
+ * A class's static factories in facade form, under the class's own name (`ModelRuntime.create(...)`, an Effect of the
+ * `ModelRuntime` facade): those that are async or produce a wrapped handle, as the draft offers functions. A class
+ * whose constructor is private is made only this way. Each is bound to the class: statics call each other through
+ * `this`.
+ */
+function staticsSource(item: Extract<Export, { kind: "class" }>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
+	const offered = Object.entries(item.statics ?? {})
+		.map(([name, signatures]) => [name, signatures.filter((signature) => !signature.traits.includes("callback"))] as const)
+		.filter(([, kept]) => kept.some((signature) => signature.traits.includes("async") || (signature.handle !== undefined && recipe.handles[signature.handle] !== undefined)))
+		.sort(([a], [b]) => a.localeCompare(b));
+	if (offered.length === 0) return [];
+	const qualify = qualifier(surface);
+	// Each member's type, written as the object's annotation (see `exportSource`), then its value.
+	const members = offered.map(([name, kept]) => {
+		const key = `${item.name}.${name}`;
+		const into = producedHandle(kept, recipe);
+		const args = `Upstream.${item.name}${propertyAccess(name)}.bind(Upstream.${item.name}), ${JSON.stringify(key)}, ${into === undefined ? "undefined" : `kinds.${into}`}, kinds, classify${entryOptions(kept)}`;
+		if (isExplicit(key, kept, recipe)) {
+			const type = `{ ${kept.map((signature) => `${explicitSignature(item.name, signature, qualify, "export")};`).join(" ")} }`;
+			return { name, type, value: `Effectify.entryAs<Statics${item.name}[${JSON.stringify(name)}]>(${args})`, key, explicit: true };
+		}
+		const type = `Effectify.EffectFunction<typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles>`;
+		return { name, type, value: `Effectify.entry<typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles>(${args})`, key, explicit: false };
+	});
+	return [
+		`/** The static factories of ${recipe.package}'s \`${item.name}\`, in facade form. */`,
+		`interface Statics${item.name} {`,
+		...members.map((member) => `\treadonly ${memberName(member.name)}: ${member.type};${member.explicit ? ` // explicit: ${member.key}` : ""}`),
+		"}",
+		"",
+		`/** The static factories of ${recipe.package}'s \`${item.name}\` in facade form: every call is an Effect. */`,
+		`export const ${item.name}: Statics${item.name} = {`,
+		...members.map((member) => `\t${memberName(member.name)}: ${member.value},`),
+		"};",
+	];
 }
 
 /**

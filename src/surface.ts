@@ -65,7 +65,10 @@ export const Export = Schema.Union([
 		kind: Schema.Literal("class"),
 		name: Schema.String,
 		handle: Schema.String,
+		/** Its public constructors: none when the constructor is private or protected (instances come from statics). */
 		constructors: Schema.Array(Signature),
+		/** Its public static methods the target declares, by name (`ModelRuntime.create`). */
+		statics: Schema.optional(Schema.Record(Schema.String, Schema.Array(Signature))),
 		/** Whether instances are errors (the class extends `Error`). */
 		error: Schema.Boolean,
 		/** The class it extends, when that is declared by the target too. */

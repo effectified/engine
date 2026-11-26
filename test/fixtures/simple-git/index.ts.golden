@@ -139,13 +139,13 @@ const kinds = {
 } satisfies Record<string, Effectify.HandleKind>;
 
 /** `simple-git.refName` in facade form: every call is an Effect of a TemplateValue. */
-export const refName = Effectify.entry<typeof Upstream.refName, Failure, Handles>(Upstream.refName, "refName", kinds.TemplateValue, kinds, classify);
+export const refName: Effectify.EffectFunction<typeof Upstream.refName, Failure, Handles> = Effectify.entry<typeof Upstream.refName, Failure, Handles>(Upstream.refName, "refName", kinds.TemplateValue, kinds, classify);
 
 /** `simple-git.remoteUrl` in facade form: every call is an Effect of a TemplateValue. */
-export const remoteUrl = Effectify.entry<typeof Upstream.remoteUrl, Failure, Handles>(Upstream.remoteUrl, "remoteUrl", kinds.TemplateValue, kinds, classify);
+export const remoteUrl: Effectify.EffectFunction<typeof Upstream.remoteUrl, Failure, Handles> = Effectify.entry<typeof Upstream.remoteUrl, Failure, Handles>(Upstream.remoteUrl, "remoteUrl", kinds.TemplateValue, kinds, classify);
 
 /** `simple-git.grepQueryBuilder` in facade form: every call is an Effect of a GitGrepQuery. */
-export const grepQueryBuilder = Effectify.entry<typeof Upstream.grepQueryBuilder, Failure, Handles>(Upstream.grepQueryBuilder, "grepQueryBuilder", kinds.GitGrepQuery, kinds, classify);
+export const grepQueryBuilder: Effectify.EffectFunction<typeof Upstream.grepQueryBuilder, Failure, Handles> = Effectify.entry<typeof Upstream.grepQueryBuilder, Failure, Handles>(Upstream.grepQueryBuilder, "grepQueryBuilder", kinds.GitGrepQuery, kinds, classify);
 
 /** `simple-git.simpleGit` in facade form: every call is an Effect of a SimpleGit. */
-export const simpleGit = Effectify.entry<typeof Upstream.simpleGit, Failure, Handles>(Upstream.simpleGit, "simpleGit", kinds.SimpleGit, kinds, classify);
+export const simpleGit: Effectify.EffectFunction<typeof Upstream.simpleGit, Failure, Handles> = Effectify.entry<typeof Upstream.simpleGit, Failure, Handles>(Upstream.simpleGit, "simpleGit", kinds.SimpleGit, kinds, classify);

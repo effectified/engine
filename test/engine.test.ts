@@ -9,10 +9,10 @@ import { Effect, Schema } from "effect";
 import { extractExamples } from "../src/docs.ts";
 import { drift } from "../src/drift.ts";
 import { generate } from "../src/generate.ts";
-import { explicitFailures, overridesFrom } from "../src/pipeline.ts";
+import { explicitFailures, overridesFrom, rejectedMarkers } from "../src/pipeline.ts";
 import { plan } from "../src/plan.ts";
 import { Recipe } from "../src/recipe.ts";
-import { Surface } from "../src/surface.ts";
+import { type Signature, Surface } from "../src/surface.ts";
 import { parseTarget } from "../src/target.ts";
 
 describe("parseTarget", () => {
@@ -135,6 +135,80 @@ describe("generate", () => {
 			}).pipe(Effect.provide(NodeServices.layer)),
 		);
 	}
+});
+
+describe("generate: classes made by statics, annotated exports, lifted methods", () => {
+	const signature = (fields: Partial<Signature>): Signature => ({ parameters: [], trailingCallback: false, returns: "void", traits: ["sync"], ...fields });
+	const surface = Schema.decodeUnknownSync(Surface)({
+		package: "runtime-lib",
+		version: "1.0.0",
+		types: { from: "bundled", package: "runtime-lib", version: "1.0.0" },
+		entry: "named",
+		typeExports: ["Options"],
+		handles: {
+			Runtime: {
+				name: "Runtime",
+				typeRef: "Upstream.Runtime",
+				methods: {
+					close: [signature({ returns: "Promise<void>", resolves: "void", traits: ["async"] })],
+					pick: [signature({ typeParameters: "K extends Hidden", parameters: [{ name: "key", type: "K", optional: false, rest: false }], returns: "Promise<K>", resolves: "K", traits: ["async"] })],
+				},
+				properties: {},
+				events: [],
+				releases: ["close"],
+			},
+		},
+		exports: [
+			{
+				kind: "class",
+				name: "Runtime",
+				handle: "Runtime",
+				// Its constructor is private: the analyzer reads none, and the class is made by `create`.
+				constructors: [],
+				statics: {
+					create: [signature({ parameters: [{ name: "options", type: "Options", optional: true, rest: false }], returns: "Promise<Runtime>", resolves: "Runtime", handle: "Runtime", traits: ["async"] })],
+					version: [signature({ returns: "string" })],
+				},
+				error: false,
+			},
+		],
+	});
+	const recipe = Schema.decodeUnknownSync(Recipe)({
+		package: "runtime-lib",
+		version: "1.0.0",
+		types: { from: "bundled", package: "runtime-lib", version: "1.0.0" },
+		name: "@effectified/runtime-lib",
+		prefix: "RuntimeLib",
+		exports: ["Runtime"],
+		handles: { Runtime: { release: "close", events: [] } },
+		errors: [{ tag: "RuntimeLibError", codes: [] }],
+		services: [],
+		methods: {},
+		derived: ["Runtime.pick"],
+		testDependencies: {},
+		decisions: [],
+	});
+
+	it.effect("offers async statics under the class's name, no constructor, and lifts each generic method on its own marked line", () =>
+		Effect.gen(function* () {
+			const source = (yield* generate(surface, recipe)).get("src/index.ts") ?? "";
+			expect(source).not.toContain("makeRuntime");
+			expect(source).toContain("export const Runtime: StaticsRuntime = {");
+			expect(source).toContain(
+				`\tcreate: Effectify.entry<typeof Upstream.Runtime.create, Failure, Handles>(Upstream.Runtime.create.bind(Upstream.Runtime), "Runtime.create", kinds.Runtime, kinds, classify),`,
+			);
+			// A sync static that yields no handle is not offered, as the draft offers functions.
+			expect(source).not.toContain("version:");
+			expect(source).toContain("const liftedRuntime_pick = () => Effectify.lifted<Failure, Handles>()(instanceOfRuntime.pick); // lifted: Runtime.pick");
+			expect(source).toContain("readonly pick: ReturnType<typeof liftedRuntime_pick>; // lifted: Runtime.pick");
+		}).pipe(Effect.provide(NodeServices.layer)),
+	);
+
+	it("finds a lifted method whose declaration cannot be emitted by its marked line", () => {
+		const source = ["", "const liftedRuntime_pick = () => Effectify.lifted<Failure, Handles>()(instanceOfRuntime.pick); // lifted: Runtime.pick"].join("\n");
+		const output = `src/index.ts(2,7): error TS2883: The inferred type of 'liftedRuntime_pick' cannot be named without a reference to 'Hidden' from '../node_modules/runtime-lib/dist/hidden.js'. This is likely not portable. A type annotation is necessary.`;
+		expect(rejectedMarkers(output, () => source)).toStrictEqual([{ marker: "lifted", key: "Runtime.pick" }]);
+	});
 });
 
 describe("extractExamples", () => {

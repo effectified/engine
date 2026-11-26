@@ -83,7 +83,12 @@ function compareKeyed<A>(
 
 function describeExport(item: Export): string {
 	if (item.kind === "function") return `function ${describeSignatures(item.signatures)}`;
-	if (item.kind === "class") return `class ${describeSignatures(item.constructors)}`;
+	if (item.kind === "class") {
+		const statics = Object.entries(item.statics ?? {})
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([name, signatures]) => `; static ${name}${describeSignatures(signatures)}`);
+		return `class ${describeSignatures(item.constructors)}${statics.join("")}`;
+	}
 	return `value ${item.type}`;
 }
 

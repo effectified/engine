@@ -330,6 +330,9 @@ export function entry<F extends (...args: never) => unknown, E, H extends Handle
 	return invoker(fn as unknown as (...args: Array<unknown>) => unknown, operation, into, kinds, classify, options) as unknown as EffectFunction<F, E, H>;
 }
 
+/** A constructor in facade form, as `construct` returns it: the generator annotates exports with it, which names only `typeof Upstream.X`. */
+export type Construct<C extends abstract new (...args: never) => unknown, E, H extends HandleEntry> = (...args: ConstructorParameters<C>) => Resolved<InstanceType<C>, E, H>;
+
 /** An exported class in facade form: constructing runs as an `Effect` of the instance's facade, scoped if releasable. */
 export function construct<C extends abstract new (...args: never) => unknown, E, H extends HandleEntry>(
 	Class: C,
@@ -338,7 +341,7 @@ export function construct<C extends abstract new (...args: never) => unknown, E,
 	kinds: Readonly<Record<string, HandleKind>>,
 	classify: Classify<E>,
 	options: EntryOptions = {},
-): (...args: ConstructorParameters<C>) => Resolved<InstanceType<C>, E, H> {
+): Construct<C, E, H> {
 	const make = Class as unknown as new (...args: Array<unknown>) => unknown;
 	// `Resolved` describes what `call` does with the instance: its facade, in a scope when the handle is releasable.
 	return invoker((...args) => new make(...args), operation, into, kinds, classify, options) as never;

@@ -39,17 +39,7 @@
 			"kind": "class",
 			"name": "Browser",
 			"handle": "Browser",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Browser",
-					"handle": "Browser",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -57,17 +47,7 @@
 			"kind": "class",
 			"name": "BrowserContext",
 			"handle": "BrowserContext",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "BrowserContext",
-					"handle": "BrowserContext",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -85,34 +65,14 @@
 			"kind": "class",
 			"name": "BrowserLauncher",
 			"handle": "BrowserLauncher",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "BrowserLauncher",
-					"handle": "BrowserLauncher",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
 			"kind": "class",
 			"name": "CDPSession",
 			"handle": "CDPSession",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "CDPSession",
-					"handle": "CDPSession",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -159,6 +119,25 @@
 					]
 				}
 			],
+			"statics": {
+				"fromSession": [
+					{
+						"parameters": [
+							{
+								"name": "session",
+								"type": "CDPSession",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "Connection | undefined",
+						"traits": [
+							"sync"
+						]
+					}
+				]
+			},
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -312,34 +291,14 @@
 			"kind": "class",
 			"name": "DeviceRequestPrompt",
 			"handle": "DeviceRequestPrompt",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "DeviceRequestPrompt",
-					"handle": "DeviceRequestPrompt",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
 			"kind": "class",
 			"name": "Dialog",
 			"handle": "Dialog",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Dialog",
-					"handle": "Dialog",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -351,18 +310,7 @@
 			"kind": "class",
 			"name": "ElementHandle",
 			"handle": "ElementHandle",
-			"constructors": [
-				{
-					"typeParameters": "ElementType extends Node = Element",
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "ElementHandle<ElementType>",
-					"handle": "ElementHandle",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "JSHandle"
 		},
@@ -440,17 +388,7 @@
 			"kind": "class",
 			"name": "Extension",
 			"handle": "Extension",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Extension",
-					"handle": "Extension",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -468,6 +406,27 @@
 					]
 				}
 			],
+			"statics": {
+				"connectTab": [
+					{
+						"parameters": [
+							{
+								"name": "tabId",
+								"type": "number",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "Promise<ExtensionTransport>",
+						"resolves": "ExtensionTransport",
+						"handle": "ExtensionTransport",
+						"traits": [
+							"async"
+						]
+					}
+				]
+			},
 			"error": false
 		},
 		{
@@ -491,17 +450,7 @@
 			"kind": "class",
 			"name": "Frame",
 			"handle": "Frame",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Frame",
-					"handle": "Frame",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -509,34 +458,14 @@
 			"kind": "class",
 			"name": "HTTPRequest",
 			"handle": "HTTPRequest",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "HTTPRequest",
-					"handle": "HTTPRequest",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
 			"kind": "class",
 			"name": "HTTPResponse",
 			"handle": "HTTPResponse",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "HTTPResponse",
-					"handle": "HTTPResponse",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -565,35 +494,14 @@
 			"kind": "class",
 			"name": "JSHandle",
 			"handle": "JSHandle",
-			"constructors": [
-				{
-					"typeParameters": "T = unknown",
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "JSHandle<T>",
-					"handle": "JSHandle",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
 			"kind": "class",
 			"name": "Keyboard",
 			"handle": "Keyboard",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Keyboard",
-					"handle": "Keyboard",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -633,18 +541,28 @@
 			"kind": "class",
 			"name": "Locator",
 			"handle": "Locator",
-			"constructors": [
-				{
-					"typeParameters": "T",
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Locator<T>",
-					"handle": "Locator",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
+			"statics": {
+				"race": [
+					{
+						"typeParameters": "Locators extends readonly unknown[] | [ ]",
+						"parameters": [
+							{
+								"name": "locators",
+								"type": "Locators",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "Locator<AwaitedLocator<Locators[number]>>",
+						"handle": "Locator",
+						"traits": [
+							"sync"
+						]
+					}
+				]
+			},
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -657,17 +575,7 @@
 			"kind": "class",
 			"name": "Mouse",
 			"handle": "Mouse",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Mouse",
-					"handle": "Mouse",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -679,17 +587,7 @@
 			"kind": "class",
 			"name": "Page",
 			"handle": "Page",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Page",
-					"handle": "Page",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
@@ -768,6 +666,68 @@
 					]
 				}
 			],
+			"statics": {
+				"registerCustomQueryHandler": [
+					{
+						"parameters": [
+							{
+								"name": "name",
+								"type": "string",
+								"optional": false,
+								"rest": false
+							},
+							{
+								"name": "queryHandler",
+								"type": "CustomQueryHandler",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"unregisterCustomQueryHandler": [
+					{
+						"parameters": [
+							{
+								"name": "name",
+								"type": "string",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"customQueryHandlerNames": [
+					{
+						"parameters": [],
+						"trailingCallback": false,
+						"returns": "string[]",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"clearCustomQueryHandlers": [
+					{
+						"parameters": [],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				]
+			},
 			"error": false
 		},
 		{
@@ -829,6 +789,68 @@
 					]
 				}
 			],
+			"statics": {
+				"registerCustomQueryHandler": [
+					{
+						"parameters": [
+							{
+								"name": "name",
+								"type": "string",
+								"optional": false,
+								"rest": false
+							},
+							{
+								"name": "queryHandler",
+								"type": "CustomQueryHandler",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"unregisterCustomQueryHandler": [
+					{
+						"parameters": [
+							{
+								"name": "name",
+								"type": "string",
+								"optional": false,
+								"rest": false
+							}
+						],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"customQueryHandlerNames": [
+					{
+						"parameters": [],
+						"trailingCallback": false,
+						"returns": "string[]",
+						"traits": [
+							"sync"
+						]
+					}
+				],
+				"clearCustomQueryHandlers": [
+					{
+						"parameters": [],
+						"trailingCallback": false,
+						"returns": "void",
+						"traits": [
+							"sync"
+						]
+					}
+				]
+			},
 			"error": false,
 			"base": "Puppeteer"
 		},
@@ -836,17 +858,7 @@
 			"kind": "class",
 			"name": "Realm",
 			"handle": "Realm",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Realm",
-					"handle": "Realm",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -899,52 +911,7 @@
 			"kind": "class",
 			"name": "ScreenRecording",
 			"handle": "ScreenRecording",
-			"constructors": [
-				{
-					"parameters": [
-						{
-							"name": "underlyingSource",
-							"type": "UnderlyingDefaultSource<Uint8Array<ArrayBufferLike>>",
-							"optional": false,
-							"rest": false
-						},
-						{
-							"name": "strategy",
-							"type": "QueuingStrategy<Uint8Array<ArrayBufferLike>> | undefined",
-							"optional": true,
-							"rest": false
-						}
-					],
-					"trailingCallback": false,
-					"returns": "ScreenRecording",
-					"handle": "ScreenRecording",
-					"traits": [
-						"sync"
-					]
-				},
-				{
-					"parameters": [
-						{
-							"name": "underlyingSource",
-							"type": "UnderlyingSource<Uint8Array<ArrayBufferLike>> | undefined",
-							"optional": true,
-							"rest": false
-						},
-						{
-							"name": "strategy",
-							"type": "QueuingStrategy<Uint8Array<ArrayBufferLike>> | undefined",
-							"optional": true,
-							"rest": false
-						}
-					],
-					"trailingCallback": false,
-					"returns": "ScreenRecording",
-					"handle": "ScreenRecording",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -973,17 +940,7 @@
 			"kind": "class",
 			"name": "Target",
 			"handle": "Target",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Target",
-					"handle": "Target",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -1085,17 +1042,7 @@
 			"kind": "class",
 			"name": "Touchscreen",
 			"handle": "Touchscreen",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "Touchscreen",
-					"handle": "Touchscreen",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false
 		},
 		{
@@ -1216,17 +1163,7 @@
 			"kind": "class",
 			"name": "WebWorker",
 			"handle": "WebWorker",
-			"constructors": [
-				{
-					"parameters": [],
-					"trailingCallback": false,
-					"returns": "WebWorker",
-					"handle": "WebWorker",
-					"traits": [
-						"sync"
-					]
-				}
-			],
+			"constructors": [],
 			"error": false,
 			"base": "EventEmitter"
 		},
