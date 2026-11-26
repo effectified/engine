@@ -7,6 +7,12 @@ import * as Effectify from "./internal/effectify.ts";
 /** The upstream package, for its types and anything the facade does not wrap. */
 export { Upstream };
 
+/** Every type upstream declares, by its own name: where the facade declares a name, the facade's wins. */
+export type * from "nodemailer";
+
+/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */
+export { getTestMessageUrl } from "nodemailer";
+
 /** Any other failure of nodemailer; `code` carries upstream's error code when it has one. */
 export class NodemailerError extends Schema.TaggedError<NodemailerError>()("NodemailerError", Effectify.errorFields) {}
 

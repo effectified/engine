@@ -7,6 +7,12 @@ import * as Effectify from "./internal/effectify.ts";
 /** The upstream package, for its types and anything the facade does not wrap. */
 export { Upstream };
 
+/** Every type upstream declares, by its own name: where the facade declares a name, the facade's wins. */
+export type * from "simple-git";
+
+/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */
+export { CheckRepoActions, CleanOptions, DiffNameStatus, GitConfigScope, ResetMode, pathspec } from "simple-git";
+
 /** simple-git failed with its `GitConstructError`, whose `config`, `task` it carries. */
 export class GitConstructError extends Schema.TaggedError<GitConstructError>()("GitConstructError", { ...Effectify.errorFields, config: Schema.Unknown, task: Schema.Unknown }) {}
 

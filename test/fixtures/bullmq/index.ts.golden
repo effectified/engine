@@ -7,6 +7,12 @@ import * as Effectify from "./internal/effectify.ts";
 /** The upstream package, for its types and anything the facade does not wrap. */
 export { Upstream };
 
+/** Every type upstream declares, by its own name: where the facade declares a name, the facade's wins. */
+export type * from "bullmq";
+
+/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */
+export { BULLMQ_MAJOR_VERSION, Backoffs, CONNECTION_CLOSED_ERROR_MSG, ChildCommand, ClientType, DEFAULT_SCHEMA, DELAYED_ERROR, DELAY_TIME_1, DELAY_TIME_5, ErrorCode, LATEST_SCHEMA_VERSION, LEGACY_REPEATABLE_JOBS_MIGRATION_URL, MIGRATION_ADVISORY_LOCK_KEY, MINIMUM_POSTGRES_VERSION, MetricNames, MetricsTime, PRIORITY_LIMIT, ParentCommand, QUEUE_EVENT_SUFFIX, QueueKeys, RATE_LIMIT_ERROR, RECOMMENDED_POSTGRES_VERSION, RELAY_LAYOUT_VERSION, RELAY_MINIMUM_REDIS_VERSION, RelayErrorCode, SpanKind, TelemetryAttributes, UNRECOVERABLE_ERROR, WAITING_CHILDREN_ERROR, WAITING_ERROR, array2obj, checkRelayResult, clientCommandMessageReg, createIORedisClient, decreaseMaxListeners, defaultRepeatStrategy, errorObject, errorToJSON, forwardConnectionError, getDefaultBackendFactory, getLegacyRepeatableJobError, getNextMillis, getParentKey, hasLegacyRepeatableKeyShape, increaseMaxListeners, invertObject, isEmpty, isIRedisClient, isLegacyRepeatableJobKey, isNotConnectionError, isPgPool, isRedisCluster, isRedisInstance, isRedisVersionLowerThan, lengthInUtf8Bytes, objectToFlatArray, optsDecodeMap, optsEncodeMap, parseObjectValues, quoteSchemaName, randomUUID, raw2NextJobData, removeUndefinedFields, toString, tryCatch, withBackend, withDetachedContext } from "bullmq";
+
 /** bullmq failed with its `ConnectionClosedError`. */
 export class ConnectionClosedError extends Schema.TaggedError<ConnectionClosedError>()("ConnectionClosedError", Effectify.errorFields) {}
 

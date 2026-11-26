@@ -185,6 +185,10 @@ describe("generate: classes made by statics, annotated exports, lifted methods",
 					{ name: "status", type: "number", optional: false },
 				],
 			},
+			{ kind: "value", name: "LIMIT", type: "100" },
+			{ kind: "value", name: "Mode", type: "typeof Mode", constEnum: true },
+			{ kind: "function", name: "format", signatures: [signature({ parameters: [{ name: "value", type: "number", optional: false, rest: false }], returns: "string" })] },
+			{ kind: "function", name: "fetchAll", signatures: [signature({ returns: "Promise<string>", resolves: "string", traits: ["async"] })] },
 		],
 	});
 	const recipe = Schema.decodeUnknownSync(Recipe)({
@@ -230,6 +234,15 @@ describe("generate: classes made by statics, annotated exports, lifted methods",
 			expect(source).toContain(
 				"\tif (cause instanceof Upstream.HttpError) return new HttpError({ ...fields, body: cause.body, kind: cause.kind, upstreamOperation: cause.operation, request: cause.request, status: cause.status });",
 			);
+		}).pipe(Effect.provide(NodeServices.layer)),
+	);
+
+	it.effect("re-exports upstream's types, and the values that need no wrapping, unless the facade declares the name", () =>
+		Effect.gen(function* () {
+			const source = (yield* generate(surface, recipe)).get("src/index.ts") ?? "";
+			expect(source).toContain(`export type * from "runtime-lib";`);
+			// Not `fetchAll` (async, not offered), not `Mode` (a const enum), not `HttpError` (the facade's own error).
+			expect(source).toContain(`export { LIMIT, format } from "runtime-lib";`);
 		}).pipe(Effect.provide(NodeServices.layer)),
 	);
 

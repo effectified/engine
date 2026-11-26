@@ -149,7 +149,8 @@ class SurfaceReader {
 				...(base === undefined ? {} : { base }),
 			};
 		}
-		return { kind: "value", name: symbol.name, type: this.print(type).slice(0, 200) };
+		const constEnum = (symbol.flags & SymbolFlags.ConstEnum) !== 0;
+		return { kind: "value", name: symbol.name, type: this.print(type).slice(0, 200), ...(constEnum ? { constEnum: true as const } : {}) };
 	}
 
 	/** Reads every queued handle, which may queue more, down to MAX_DEPTH. */

@@ -33,7 +33,8 @@
 		{
 			"kind": "value",
 			"name": "AutofillAddressField",
-			"type": "typeof AutofillAddressField"
+			"type": "typeof AutofillAddressField",
+			"constEnum": true
 		},
 		{
 			"kind": "class",
@@ -54,12 +55,14 @@
 		{
 			"kind": "value",
 			"name": "BrowserContextEvent",
-			"type": "typeof BrowserContextEvent"
+			"type": "typeof BrowserContextEvent",
+			"constEnum": true
 		},
 		{
 			"kind": "value",
 			"name": "BrowserEvent",
-			"type": "typeof BrowserEvent"
+			"type": "typeof BrowserEvent",
+			"constEnum": true
 		},
 		{
 			"kind": "class",
@@ -606,7 +609,8 @@
 		{
 			"kind": "value",
 			"name": "PageEvent",
-			"type": "typeof PageEvent"
+			"type": "typeof PageEvent",
+			"constEnum": true
 		},
 		{
 			"kind": "value",

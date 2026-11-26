@@ -60,6 +60,12 @@ export const Recipe = Schema.Struct({
 	tagline: Schema.optional(Schema.String),
 	/** Exported functions and classes the facade offers. */
 	exports: Schema.Array(Schema.String),
+	/**
+	 * Upstream's values the facade re-exports as they are, needing no wrapping: constants, synchronous functions that
+	 * make no handle, and classes with nothing async, streamed, reported through a callback or released. Unset, the
+	 * engine's list (`passthroughCandidates`); a name the facade declares itself is never re-exported.
+	 */
+	passthrough: Schema.optional(Schema.Array(Schema.String)),
 	handles: Schema.Record(Schema.String, HandleRecipe),
 	errors: Schema.Array(ErrorRecipe),
 	/** Handles provided as `Context.Service`s, with the export that acquires one. */
@@ -193,6 +199,13 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		.map((name) => name.trim())
 		.filter((name) => name.length > 0);
 
+	const passthrough = decide(
+		"passthrough",
+		"Which of upstream's values does the facade re-export as they are? (\"none\" for none)",
+		passthroughCandidates(surface, exports).join(", ") || "none",
+		"constants, synchronous functions that make no handle, and classes with nothing async, streamed, reported through a callback or released",
+	);
+
 	const handles: Record<string, HandleRecipe> = {};
 	for (const name of reachableHandles(surface, exports)) {
 		const handle = surface.handles[name];
@@ -244,6 +257,7 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		name,
 		prefix,
 		exports,
+		passthrough: passthrough === "none" ? [] : passthrough.split(",").map((name) => name.trim()).filter((name) => name.length > 0),
 		handles,
 		errors,
 		services: dedupeBy(services, (service) => service.name),
@@ -270,6 +284,23 @@ function offeredExports(surface: Surface, readme: string): { readonly names: Rea
 	const used = candidates.filter((item) => new RegExp(`(\\bnew\\s+${item.name}\\b|\\b${item.name}\\s*\\(|\\.${item.name}\\s*\\()`).test(readme));
 	if (used.length > 0) return { names: used.map((item) => item.name), why: "the exports the package README calls" };
 	return { names: candidates.map((item) => item.name), why: "every exported function or class that is async or yields a handle" };
+}
+
+/** Upstream's values that need no wrapping, the facade offering none of them (see `Recipe.passthrough`). */
+export function passthroughCandidates(surface: Surface, offered: ReadonlyArray<string>): ReadonlyArray<string> {
+	const plain = (handle: Handle | undefined) =>
+		handle === undefined ||
+		(handle.releases.length === 0 &&
+			Object.values(handle.methods).every((signatures) => signatures.every((signature) => !signature.traits.some((trait) => trait === "async" || trait === "stream" || trait === "callback"))));
+	return surface.exports
+		.filter((item) => item.name !== "default" && !offered.includes(item.name))
+		.filter((item) => {
+			if (item.kind === "value") return item.constEnum !== true;
+			if (item.kind === "function") return item.signatures.every((signature) => signature.handle === undefined && (signature.traits.includes("sync") || signature.traits.includes("returns-this")));
+			return item.error || plain(surface.handles[item.handle]);
+		})
+		.map((item) => item.name)
+		.sort();
 }
 
 /** The handle an export produces. */

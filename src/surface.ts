@@ -76,7 +76,13 @@ export const Export = Schema.Union([
 		/** The class it extends, when that is declared by the target too. */
 		base: Schema.optional(Schema.String),
 	}),
-	Schema.Struct({ kind: Schema.Literal("value"), name: Schema.String, type: Schema.String }),
+	Schema.Struct({
+		kind: Schema.Literal("value"),
+		name: Schema.String,
+		type: Schema.String,
+		/** A `const enum`: inlined at compile time, it exists in no JavaScript a facade could re-export. */
+		constEnum: Schema.optional(Schema.Literal(true)),
+	}),
 ]);
 export type Export = typeof Export.Type;
 

@@ -5,7 +5,7 @@
 
 import { Effect, FileSystem, Path } from "effect";
 import { docsFiles, type TestDocs } from "./docs.ts";
-import { description, facadeVersion, type Recipe } from "./recipe.ts";
+import { description, facadeVersion, passthroughCandidates, type Recipe } from "./recipe.ts";
 import { agreedSignal, callbackMethods, classified, type SignalSlot, signalSlots, wrappedMethods, wrappedProperties } from "./methods.ts";
 import { uiFiles } from "./ui-facade.ts";
 import type { Export, Handle, Signature, Surface } from "./surface.ts";
@@ -74,7 +74,19 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		"/** The upstream package, for its types and anything the facade does not wrap. */",
 		"export { Upstream };",
 		"",
+		// The facade's own declarations shadow upstream's types of the same name (its `Page` is the facade's).
+		"/** Every type upstream declares, by its own name: where the facade declares a name, the facade's wins. */",
+		`export type * from ${JSON.stringify(recipe.package)};`,
+		"",
 	);
+	const passed = (recipe.passthrough ?? passthroughCandidates(surface, recipe.exports)).filter((name) => !declaredNames(surface, recipe).has(name));
+	if (passed.length > 0) {
+		push(
+			"/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */",
+			`export { ${passed.join(", ")} } from ${JSON.stringify(recipe.package)};`,
+			"",
+		);
+	}
 
 	// Errors
 	const catchAll = recipe.errors.at(-1);
@@ -219,6 +231,25 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		push("};", "");
 	}
 	return `${lines.join("\n").trimEnd()}\n`;
+}
+
+/**
+ * The names the facade exports of its own: its errors, handles, offered exports (a class as `make<Class>`, its
+ * statics under its name), services and events. Upstream's values of these names are not re-exported.
+ */
+function declaredNames(surface: Surface, recipe: Recipe): ReadonlySet<string> {
+	const offered = surface.exports
+		.filter((item) => recipe.exports.includes(item.name))
+		.flatMap((item) => (item.kind === "class" ? [`make${item.name}`, item.name] : [item.name === "default" ? lowerFirst(recipe.prefix) : item.name]));
+	return new Set([
+		"Upstream",
+		"Failure",
+		"events",
+		...recipe.errors.map((error) => error.tag),
+		...Object.keys(recipe.handles),
+		...recipe.services.map((service) => service.name),
+		...offered,
+	]);
 }
 
 /**

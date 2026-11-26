@@ -7,6 +7,12 @@ import * as Effectify from "./internal/effectify.ts";
 /** The upstream package, for its types and anything the facade does not wrap. */
 export { Upstream };
 
+/** Every type upstream declares, by its own name: where the facade declares a name, the facade's wins. */
+export type * from "puppeteer-core";
+
+/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */
+export { CDPSessionEvent, ConsoleMessage, DEBUG_PREFIXES, DEFAULT_INTERCEPT_RESOLUTION_PRIORITY, EventEmitter, InterceptResolutionAction, KnownDevices, LocatorEvent, MouseButton, PredefinedNetworkConditions, Protocol, RemoteException, SecurityDetails, Session, TargetType, WebMCPToolCall, WebWorkerEvent, asyncDisposeSymbol, disposeSymbol } from "puppeteer-core";
+
 /** puppeteer-core failed with its `ConnectionClosedError`, whose `code`, `originalMessage` it carries. */
 export class ConnectionClosedError extends Schema.TaggedError<ConnectionClosedError>()("ConnectionClosedError", { ...Effectify.errorFields, code: Schema.optional(Schema.Number), originalMessage: Schema.String }) {}
 
