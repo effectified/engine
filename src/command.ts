@@ -74,6 +74,28 @@ export const runCommand = Effect.fn("runCommand")(function* (
 });
 
 /**
+ * Runs `command args` in `cwd` attached to the engine's terminal, for a step a person runs: the command reads what the
+ * person types and prints to the terminal as it goes (npm showing the page that approves a sign-in), so nothing it
+ * prints is kept. Its exit code; a signal that ends it fails the run (`CommandError`).
+ */
+export const runAttached = Effect.fn("runAttached")(function* (
+	command: string,
+	args: ReadonlyArray<string>,
+	cwd: string,
+) {
+	const label = [command, ...args].join(" ");
+	return yield* Effect.scoped(
+		Effect.gen(function* () {
+			const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+			const handle = yield* spawner.spawn(
+				ChildProcess.make(command, [...args], { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" }),
+			);
+			return Number(yield* handle.exitCode);
+		}),
+	).pipe(Effect.mapError((cause) => new CommandError({ command: label, reason: cause.message })));
+});
+
+/**
  * How `runBounded` bounds a command: against accidents (a hang, a process left running, an inherited token), not
  * against code set on harm, which runs with the user's rights.
  */

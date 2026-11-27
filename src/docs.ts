@@ -8,14 +8,13 @@ import { callbackMethods, classified, keptReleases, lookupMethods, optionMethods
 import {
 	demoUrl,
 	description,
-	facadeVersion,
-	latestUrl,
+	effectUiUrl,
 	PACKAGES_REPOSITORY,
 	type Recipe,
 	releaseTag,
-	releaseUrl,
 	SITE,
 	slug,
+	targetDirectory,
 	wrappedExports,
 } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
@@ -84,9 +83,13 @@ export interface Api {
 	readonly mounts: ReadonlyArray<string>;
 }
 
-/** docs.json: everything effectified.dev shows on the facade's page. A stored format: `schema` moves when it changes. */
+/**
+ * docs.json: everything effectified.dev shows on the facade's page. A stored format: `schema` moves when it changes.
+ * Schema 2 (engine 0.5.0): facades are on npm, installed by `name`; `install` gives the package's npm page and the tag
+ * of its GitHub release, and no longer the tarball URLs of schema 1 (`latest`, `release`).
+ */
 export interface Docs {
-	readonly schema: 1;
+	readonly schema: 2;
 	readonly name: string;
 	readonly slug: string;
 	readonly kind: "runtime" | "ui";
@@ -97,27 +100,31 @@ export interface Docs {
 	readonly engine: string;
 	readonly page: string;
 	readonly source: string;
+	/**
+	 * How to install it: `name` from npm (`npm`, the package's page there), with Effect UI's snapshot build for a
+	 * frontend facade (`effectUi`); `tag`, its GitHub release at `version`, which holds its notes and demo.
+	 */
 	readonly install: {
-		readonly latest: string;
-		readonly release: string;
+		readonly npm: string;
 		readonly tag: string;
 		readonly effectUi?: string;
 	};
-	/** The built demo of a frontend facade, attached to its release: a tarball of `<demo>.html` pages and their assets. */
+	/** The built demo of a frontend facade, attached to its GitHub release: a tarball of `<demo>.html` pages and their assets. */
 	readonly demo?: { readonly url: string; readonly pages: ReadonlyArray<string> };
 	readonly tests: number;
 	readonly examples: ReadonlyArray<Example>;
 	readonly api: Api;
 }
 
-/** The documentation files of a facade, by path relative to its package. */
+/** The documentation files of a facade at `version` (its `facadeVersion`), by path relative to its package. */
 export function docsFiles(
 	surface: Surface,
 	recipe: Recipe,
+	version: string,
 	tests: TestDocs,
 	engine: string,
 ): ReadonlyMap<string, string> {
-	const docs = docsOf(surface, recipe, tests, engine);
+	const docs = docsOf(surface, recipe, version, tests, engine);
 	return new Map([
 		["README.md", readme(docs)],
 		["SKILL.md", skill(docs)],
@@ -269,10 +276,10 @@ function uses(body: string, identifier: string): boolean {
 	);
 }
 
-/** The facade's docs, from its surface, recipe and tests. */
-function docsOf(surface: Surface, recipe: Recipe, tests: TestDocs, engine: string): Docs {
+/** The facade's docs at `version`, from its surface, recipe and tests. */
+function docsOf(surface: Surface, recipe: Recipe, version: string, tests: TestDocs, engine: string): Docs {
 	return {
-		schema: 1,
+		schema: 2,
 		name: recipe.name,
 		slug: slug(recipe),
 		kind: recipe.ui === undefined ? "runtime" : "ui",
@@ -283,21 +290,18 @@ function docsOf(surface: Surface, recipe: Recipe, tests: TestDocs, engine: strin
 			version: recipe.version,
 			npm: `https://www.npmjs.com/package/${recipe.package}`,
 		},
-		version: facadeVersion(recipe),
+		version,
 		engine,
 		page: `${SITE}/${slug(recipe)}`,
-		source: `https://github.com/${PACKAGES_REPOSITORY}/tree/main/targets/${recipe.package.replace(/^@/, "").replace("/", "__")}`,
+		source: `https://github.com/${PACKAGES_REPOSITORY}/tree/main/targets/${targetDirectory(recipe)}`,
 		install: {
-			latest: latestUrl(recipe),
-			release: releaseUrl(recipe),
-			tag: releaseTag(recipe),
-			...(recipe.ui === undefined
-				? {}
-				: { effectUi: `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${recipe.ui.effectUi}` }),
+			npm: `https://www.npmjs.com/package/${recipe.name}`,
+			tag: releaseTag(recipe, version),
+			...(recipe.ui === undefined ? {} : { effectUi: effectUiUrl(recipe.ui.effectUi) }),
 		},
 		...(recipe.ui === undefined || tests.demos.length === 0
 			? {}
-			: { demo: { url: demoUrl(recipe), pages: tests.demos } }),
+			: { demo: { url: demoUrl(recipe, version), pages: tests.demos } }),
 		tests: tests.tests,
 		examples: tests.examples,
 		api: apiOf(surface, recipe),
@@ -363,13 +367,17 @@ function apiOf(surface: Surface, recipe: Recipe): Api {
 	};
 }
 
-/** The commands that install the facade's newest release, and with a frontend facade Effect UI's snapshot. */
-function installCommands(docs: Docs): ReadonlyArray<string> {
-	const extra = docs.install.effectUi === undefined ? "" : ` ${docs.install.effectUi}`;
+/**
+ * The commands that install the facade `name` from npm, its newest version, with Effect UI's snapshot build for a
+ * frontend facade (`effectUi`, a URL): npm 12 installs a URL only when told to (`--allow-remote`), the one on its
+ * command line with `root`.
+ */
+export function installCommands(name: string, effectUi?: string): ReadonlyArray<string> {
+	const extra = effectUi === undefined ? "" : ` ${effectUi}`;
 	return [
-		`pnpm add ${docs.install.latest} effect${extra}`,
-		`npm install --allow-remote=all ${docs.install.latest} effect${extra}`,
-		`bun add ${docs.install.latest} effect${extra}`,
+		`pnpm add ${name} effect${extra}`,
+		`npm install ${effectUi === undefined ? "" : "--allow-remote=root "}${name} effect${extra}`,
+		`bun add ${name} effect${extra}`,
 	];
 }
 
@@ -384,10 +392,10 @@ function readme(docs: Docs): string {
 		"## Install",
 		"",
 		"```sh",
-		...installCommands(docs),
+		...installCommands(docs.name, docs.install.effectUi),
 		"```",
 		"",
-		`\`${docs.install.latest}\` always installs the newest release. This one is ${docs.version}, for ${docs.upstream.package} ${docs.upstream.version}; to pin it, install ${docs.install.release}.${docs.kind === "ui" ? " Effect UI is in public preview: install its snapshot build, as above." : ""}`,
+		`This is ${docs.version}, for ${docs.upstream.package} ${docs.upstream.version}, which it depends on exactly. A facade's version is its library's major.minor, then how many releases of the facade came before for that major.minor (as DefinitelyTyped numbers \`@types\` packages), so a fix to the facade is a new version too.${docs.kind === "ui" ? " Effect UI is in public preview: install its snapshot build, as above." : ""}`,
 		"",
 		...examplesMarkdown(docs, "##"),
 		"## API",
@@ -422,7 +430,7 @@ function skill(docs: Docs): string {
 		"## Install",
 		"",
 		"```sh",
-		installCommands(docs)[0] ?? "",
+		installCommands(docs.name, docs.install.effectUi)[0] ?? "",
 		"```",
 		"",
 		"## Rules",

@@ -5,7 +5,7 @@
 
 import { EFFECT_PLUGIN } from "./diagnostics.ts";
 import type { Element } from "./elements.ts";
-import { description, facadeVersion, type Recipe } from "./recipe.ts";
+import { description, effectUiUrl, facadeRepository, type Recipe } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
 
 /**
@@ -24,10 +24,11 @@ const UI_TOOLCHAIN = {
 		"https://github.com/effectified/engine/releases/download/puppeteer-core-v25.19.0+2/effectified-puppeteer-core-25.19.0+2.tgz",
 } as const;
 
-/** The files of a frontend facade, by path relative to the package, given the runtime's source. */
+/** The files of a frontend facade at `version` (its `facadeVersion`), by path relative to the package, given the runtime's source. */
 export function uiFiles(
 	surface: Surface,
 	recipe: Recipe,
+	version: string,
 	header: (what: string) => string,
 	runtime: string,
 ): ReadonlyMap<string, string> {
@@ -35,7 +36,7 @@ export function uiFiles(
 	if (ui === undefined) return new Map();
 	const elements = boundElements(surface, recipe);
 	const files = new Map<string, string>([
-		["package.json", packageJson(recipe, ui.effectUi, elements)],
+		["package.json", packageJson(recipe, version, ui.effectUi, elements)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/internal/ui.ts", `${header("the Effect UI runtime of @effectified/engine, copied verbatim")}${runtime}`],
@@ -345,21 +346,21 @@ export const fixture = Effect.fn("fixture")(function* (name: string) {
 });
 `;
 
-function packageJson(recipe: Recipe, effectUi: string, elements: ReadonlyArray<Element>): string {
+function packageJson(recipe: Recipe, version: string, effectUi: string, elements: ReadonlyArray<Element>): string {
 	const dependencies: Record<string, string> = {
 		...recipe.typeDependencies,
 		[recipe.package]: recipe.version,
 		...recipe.ui?.dependencies,
 	};
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
-	const effectUiUrl = `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${effectUi}`;
 	return `${JSON.stringify(
 		{
 			name: recipe.name,
-			version: facadeVersion(recipe),
+			version,
 			description: description(recipe),
 			type: "module",
 			license: "MIT",
+			repository: facadeRepository(recipe),
 			// `./elements/*` only for a facade with element bindings: a wildcard no file matches promises entry points
 			// the release lacks (chart.js and CodeMirror offer mounts only).
 			exports: {
@@ -380,7 +381,7 @@ function packageJson(recipe: Recipe, effectUi: string, elements: ReadonlyArray<E
 			peerDependencies: { "@effect/ui": "*", effect: `~${UI_TOOLCHAIN.effect}` },
 			devDependencies: Object.fromEntries(
 				Object.entries({
-					"@effect/ui": effectUiUrl,
+					"@effect/ui": effectUiUrl(effectUi),
 					"@effect/vitest": UI_TOOLCHAIN["@effect/vitest"],
 					"@effectified/puppeteer-core": UI_TOOLCHAIN["@effectified/puppeteer-core"],
 					"@types/node": UI_TOOLCHAIN["@types/node"],

@@ -1,6 +1,11 @@
-# Releases the engine, from a commit of main that passed CI, when its version is not released yet: the GitHub
-# release `v<version>` of effectified/engine, its tarball what effectified/packages installs. A release is never
-# replaced, so a new engine needs a new version.
+# Releases the engine from a commit of main that passed CI, where its version is missing: on npm, published through
+# this workflow's identity (npm's trusted publishing: no token is stored, nobody signs in, and the tarball gets a
+# provenance attestation that names the commit), and as the GitHub release `v<version>` with the tarball attached, which
+# effectified/packages installs by URL until it moves to npm. npm is the record: a version it has is not published again,
+# and a run that stopped half way is finished by the next (or by running this run again). A release is never replaced,
+# so a new engine needs a new version. npm trusts this file by its name, `release.yml`: renaming it needs the trusted
+# publisher of @effectified/engine set again. Until `effectify bootstrap --engine` has made the engine known to npm, a run
+# warns and makes only the GitHub release.
 name: release
 
 on:
@@ -9,8 +14,7 @@ on:
     types: [completed]
     branches: [main]
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: release
@@ -20,31 +24,24 @@ jobs:
   release:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      # The GitHub release and its tag.
+      contents: write
+      # The workflow's identity, which npm takes instead of a token.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      # Node 24 comes with an npm that publishes through the workflow's identity (11.5.1 or newer; the script checks).
+      # No cache in a release build, and no registry-url: with it setup-node writes a token line npm would read.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: pnpm
+          package-manager-cache: false
       - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Release the engine's version if it is not released yet
+      - name: Release the engine's version where npm or the GitHub releases lack it
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          version=$(node -p 'require("./package.json").version')
-          if gh release view "v$version" >/dev/null 2>&1; then
-            echo "v$version is released already"
-            exit 0
-          fi
-          pnpm build
-          pnpm pack --pack-destination "$RUNNER_TEMP"
-          url="https://github.com/effectified/engine/releases/download/v$version/effectified-engine-$version.tgz"
-          printf '%s\n' "@effectified/engine $version, built from $SHA." "" '```sh' "pnpm add -D $url" '```' > "$RUNNER_TEMP/NOTES.md"
-          # The version's section of CHANGELOG.md, without its heading, when it has one.
-          awk -v heading="## $version" '$0 == heading { found = 1; next } found && /^## / { exit } found' CHANGELOG.md >> "$RUNNER_TEMP/NOTES.md"
-          gh release create "v$version" --target "$SHA" --prerelease --title "@effectified/engine $version" \
-            --notes-file "$RUNNER_TEMP/NOTES.md" "$RUNNER_TEMP/effectified-engine-$version.tgz"
+        run: node scripts/release.ts

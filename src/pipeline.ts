@@ -1,6 +1,6 @@
 // The engine's steps over one target directory (`<out>/<package>/`): study (surface and scan), draft (the recipe),
-// build (the facade package) and verify (install and type check it). Each step reads what the one before wrote, so a
-// person or an agent can stop after any of them, edit, and go on.
+// build (the facade package), verify (install and type check it), and release it on npm (pack it, then publish it).
+// Each step reads what the one before wrote, so a person or an agent can stop after any of them, edit, and go on.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { analyze } from "./analyze.ts";
@@ -9,18 +9,22 @@ import { typedElements } from "./element-types.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
 import { runCommand, temporaryDirectory } from "./command.ts";
 import { effectNative } from "./diagnostics.ts";
-import { readTestDocs } from "./docs.ts";
 import { generate, valueExports, writeFiles } from "./generate.ts";
 import { entryFiles, type Imported, importableNames, importFiles } from "./imports.ts";
+import { installCommands, readTestDocs } from "./docs.ts";
+import { PUBLISHING_NPM, type Published, published, requireNpm } from "./npm.ts";
 import {
 	decodeRecipe,
+	demoArchive,
 	draftRecipe,
+	effectUiUrl,
 	facadeVersion,
 	type MethodOverride,
 	PACKAGES_REPOSITORY,
 	type Recipe,
 	releaseTag,
-	releaseUrl,
+	slug,
+	targetDirectory,
 	wrappedExports,
 } from "./recipe.ts";
 import { type Scan, scan } from "./scan.ts";
@@ -303,101 +307,287 @@ export const test = Effect.fn("test")(function* (files: TargetFiles) {
 	return { output: tail(result.output) };
 });
 
-/** Whether the facade's current version (`<name>-v<version>`) is released on PACKAGES_REPOSITORY. */
-export const isReleased = Effect.fn("isReleased")(function* (files: TargetFiles, root: string) {
+/**
+ * What a release does with a facade's version, from what npm holds of its package and whether its GitHub release exists:
+ * nothing (`released`); publish it on npm, then make its GitHub release (`publish`); make only the GitHub release, which
+ * a run that stopped after publishing left out (`announce`); nothing yet, npm having never seen the package, which it
+ * must have before it trusts a workflow to publish it (`bootstrap`, a person's step); or nothing, failing, when npm lacks
+ * the version but its tag is a GitHub release already, which a release made otherwise holds (`conflict`: the GitHub-only
+ * releases before engine 0.5.0 were tagged by upstream's version, `<slug>-v<upstream version>`).
+ */
+export type ReleasePlan = "released" | "publish" | "announce" | "bootstrap" | "conflict";
+
+/** The release plan of a facade at `version`, from what npm holds of its package and whether its GitHub release exists. */
+export function releasePlan(npm: Published, version: string, onGitHub: boolean): ReleasePlan {
+	if (npm.kind === "absent") return "bootstrap";
+	if (npm.versions.includes(version)) return onGitHub ? "released" : "announce";
+	return onGitHub ? "conflict" : "publish";
+}
+
+/** A facade's release: its recipe, its version (`facadeVersion`), its tag and its plan. */
+export interface Planned {
+	readonly recipe: Recipe;
+	readonly version: string;
+	readonly tag: string;
+	readonly plan: ReleasePlan;
+}
+
+/** Plans a facade's release: its version, and what npm and the GitHub releases of PACKAGES_REPOSITORY lack of it. */
+export const planRelease = Effect.fn("planRelease")(function* (files: TargetFiles, root: string) {
 	const recipe = yield* readRecipe(files);
-	return (
-		(yield* runCommand("gh", ["release", "view", releaseTag(recipe), "--repo", PACKAGES_REPOSITORY], root))
-			.exitCode === 0
-	);
+	const version = yield* facadeVersion(recipe);
+	const tag = releaseTag(recipe, version);
+	const npm = yield* published(recipe.name);
+	return { recipe, version, tag, plan: releasePlan(npm, version, yield* onGitHub(tag, root)) } satisfies Planned;
+});
+
+/** Whether PACKAGES_REPOSITORY has the GitHub release `tag`. */
+const onGitHub = Effect.fn("onGitHub")(function* (tag: string, root: string) {
+	return (yield* runCommand("gh", ["release", "view", tag, "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0;
 });
 
 /**
- * Releases a facade on GitHub: builds it with TypeScript 7, packs it, and attaches the tarball to the release
- * `<name>-v<version>` of PACKAGES_REPOSITORY, made from a clean, pushed HEAD of that repository and never replaced.
+ * The commit a release is made from, HEAD of `root`, which what it publishes names: for a release the tree must be
+ * clean and the commit pushed; a dry run takes HEAD as it is.
  */
-export const release = Effect.fn("release")(function* (files: TargetFiles, root: string) {
-	const fs = yield* FileSystem.FileSystem;
-	const path = yield* Path.Path;
-	const recipe = yield* readRecipe(files);
-	const name = recipe.name.replace(/^@effectified\//, "");
-	const version = facadeVersion(recipe);
-	const tag = releaseTag(recipe);
+export const releaseCommit = Effect.fn("releaseCommit")(function* (root: string, dryRun: boolean) {
 	const git = (args: ReadonlyArray<string>) => runCommand("git", args, root);
+	const head = (yield* git(["rev-parse", "HEAD"])).output.trim();
+	if (dryRun) return head;
 	if ((yield* git(["status", "--porcelain"])).output.trim() !== "")
 		return yield* new StepError({ step: "release", reason: "the tree has uncommitted changes" });
-	const head = (yield* git(["rev-parse", "HEAD"])).output.trim();
 	yield* git(["fetch", "--quiet", "origin"]);
 	if (!(yield* git(["branch", "--remotes", "--contains", head])).output.includes("origin/")) {
 		return yield* new StepError({ step: "release", reason: `HEAD ${head} is not pushed` });
 	}
-	if ((yield* runCommand("gh", ["release", "view", tag, "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0) {
-		return yield* new StepError({
-			step: "release",
-			reason: `${tag} is released already; a release is never replaced`,
-		});
+	return head;
+});
+
+/** What `pack` wrote for a facade, `packed.json` beside the files it names: what `publish` needs. */
+export const Packed = Schema.Struct({
+	name: Schema.String,
+	version: Schema.String,
+	tag: Schema.String,
+	/** The commit it was built from, which its GitHub release targets. */
+	commit: Schema.String,
+	/** The package's tarball, which npm publishes. */
+	tarball: Schema.String,
+	/** A frontend facade's built demo, which its GitHub release carries. */
+	demo: Schema.optional(Schema.String),
+});
+export type Packed = typeof Packed.Type;
+
+/** What `packRelease` did with a facade: packed it, or left it as npm and its GitHub release hold it. */
+export type PackOutcome =
+	| { readonly kind: "packed"; readonly planned: Planned; readonly packed: Packed }
+	| { readonly kind: "released"; readonly planned: Planned }
+	| { readonly kind: "bootstrap"; readonly planned: Planned };
+
+/**
+ * Packs a facade whose release has something to do (`planRelease`) into `into/<slug>/`, from `commit`. A package npm
+ * has never seen is left, since no workflow may publish it yet, but in a dry run, which publishes nothing and checks it
+ * too. A version whose tag another release holds fails (`conflict`): a later revision gives the facade a version of its
+ * own.
+ */
+export const packRelease = Effect.fn("packRelease")(function* (
+	files: TargetFiles,
+	commit: string,
+	into: string,
+	root: string,
+	dryRun: boolean,
+) {
+	const planned = yield* planRelease(files, root);
+	switch (planned.plan) {
+		case "released":
+			return { kind: "released", planned } satisfies PackOutcome;
+		case "bootstrap":
+			if (!dryRun) return { kind: "bootstrap", planned } satisfies PackOutcome;
+			break;
+		case "conflict":
+			return yield* new StepError({
+				step: "release",
+				reason: `npm lacks ${planned.recipe.name}@${planned.version}, but ${PACKAGES_REPOSITORY} has a GitHub release ${planned.tag} already, made otherwise (before engine 0.5.0 a release was tagged by upstream's version): raise recipe.revision past it, so the facade's version is one of its own`,
+			});
+		case "publish":
+		case "announce":
+			break;
 	}
+	return { kind: "packed", planned, packed: yield* pack(files, planned, commit, into) } satisfies PackOutcome;
+});
+
+/**
+ * Builds a facade with TypeScript 7, imports every entry point of the build in Node, and packs it into `into/<slug>/`:
+ * the tarball npm publishes, the notes of its GitHub release, a frontend facade's demo, and `packed.json`.
+ */
+const pack = Effect.fn("pack")(function* (files: TargetFiles, planned: Planned, commit: string, into: string) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const { recipe, version, tag } = planned;
+	const directory = path.join(into, slug(recipe));
+	yield* fs.makeDirectory(directory, { recursive: true });
 	yield* install(files);
 	yield* buildRelease(files);
 	// What is released must import: a facade that built and tested can still fail as it loads.
 	yield* importBuilt(files);
-	const packed = yield* temporaryDirectory();
-	const pack = yield* runCommand("npm", ["pack", "--ignore-scripts", "--pack-destination", packed], files.package);
-	if (pack.exitCode !== 0) return yield* new StepError({ step: "npm pack", reason: tail(pack.output) });
-	// The tarball is named as its URL says, whatever npm made of a `+revision` in the file it wrote.
-	const written = (yield* fs.readDirectory(packed)).find((file) => file.endsWith(".tgz")) ?? "";
-	const tarball = path.join(packed, `effectified-${name}-${version}.tgz`);
-	if (written !== path.basename(tarball)) yield* fs.rename(path.join(packed, written), tarball);
-	// A frontend facade's fixtures, built by Vite, are its demo: effectified.dev embeds the release's own.
-	const assets = [tarball];
-	if (recipe.ui !== undefined && (yield* readTestDocs(files.package, recipe.name)).demos.length > 0) {
-		const site = path.join(packed, "demo");
-		const demo = yield* runCommand("npm", ["run", "--silent", "demo", "--", site], files.package);
-		if (demo.exitCode !== 0) return yield* new StepError({ step: "demo", reason: tail(demo.output) });
-		const archive = path.join(packed, `effectified-${name}-${version}-demo.tgz`);
-		const tar = yield* runCommand("tar", ["-czf", archive, "-C", site, "."], files.package);
-		if (tar.exitCode !== 0) return yield* new StepError({ step: "tar", reason: tail(tar.output) });
-		assets.push(archive);
-	}
-	const url = releaseUrl(recipe);
-	const notes = path.join(packed, "NOTES.md");
-	yield* fs.writeFileString(
-		notes,
-		[
-			`${recipe.name} ${version}: ${recipe.package}@${recipe.version} in Effect, generated by the effectified engine at ${head}.`,
-			"",
-			"```sh",
-			`npm install --allow-remote=root ${url} effect`,
-			`pnpm add ${url} effect`,
-			`bun add ${url} effect`,
-			"```",
-			"",
-			`Recipe, surface and tests: https://github.com/${PACKAGES_REPOSITORY}/tree/${head}/targets/${files.directory.split("/").at(-1)}`,
-			"",
-		].join("\n"),
+	const packed = yield* runCommand(
+		"npm",
+		["pack", "--ignore-scripts", "--pack-destination", directory],
+		files.package,
 	);
+	if (packed.exitCode !== 0) return yield* new StepError({ step: "npm pack", reason: tail(packed.output) });
+	// npm names the file it wrote as its last line.
+	const tarball = packed.stdout.trim().split("\n").at(-1) ?? "";
+	// A frontend facade's fixtures, built by Vite, are its demo: effectified.dev embeds the release's own.
+	const demo =
+		recipe.ui !== undefined && (yield* readTestDocs(files.package, recipe.name)).demos.length > 0
+			? yield* buildDemo(files, demoArchive(recipe, version), directory)
+			: undefined;
+	yield* fs.writeFileString(path.join(directory, NOTES), releaseNotes(recipe, version, commit));
+	const written = {
+		name: recipe.name,
+		version,
+		tag,
+		commit,
+		tarball,
+		...(demo === undefined ? {} : { demo }),
+	} satisfies Packed;
+	yield* fs.writeFileString(path.join(directory, PACKED), json(written));
+	return written;
+});
+
+/** The record `pack` writes beside a facade's files, and the notes of its GitHub release. */
+const PACKED = "packed.json";
+const NOTES = "NOTES.md";
+
+/** Builds a frontend facade's demo (`npm run demo`) and archives it as `archive` in `directory`; its file name. */
+const buildDemo = Effect.fn("buildDemo")(function* (files: TargetFiles, archive: string, directory: string) {
+	const path = yield* Path.Path;
+	const site = yield* temporaryDirectory("effectified-demo-");
+	const demo = yield* runCommand("npm", ["run", "--silent", "demo", "--", site], files.package);
+	if (demo.exitCode !== 0) return yield* new StepError({ step: "demo", reason: tail(demo.output) });
+	const tar = yield* runCommand("tar", ["-czf", path.join(directory, archive), "-C", site, "."], files.package);
+	if (tar.exitCode !== 0) return yield* new StepError({ step: "tar", reason: tail(tar.output) });
+	return archive;
+}, Effect.scoped);
+
+/** The notes of a facade's GitHub release: what it is, how to install it from npm, and where it was made. */
+function releaseNotes(recipe: Recipe, version: string, commit: string): string {
+	return [
+		`${recipe.name} ${version}: ${recipe.package}@${recipe.version} in Effect, generated by the effectified engine at ${commit}.`,
+		"",
+		"```sh",
+		...installCommands(recipe.name, recipe.ui === undefined ? undefined : effectUiUrl(recipe.ui.effectUi)),
+		"```",
+		"",
+		`On npm: https://www.npmjs.com/package/${recipe.name}/v/${version}`,
+		"",
+		`Recipe, surface and tests: https://github.com/${PACKAGES_REPOSITORY}/tree/${commit}/targets/${targetDirectory(recipe)}`,
+		"",
+	].join("\n");
+}
+
+/** Reads every facade `pack` wrote into `from`, in the order of their directories. */
+export const readPacked = Effect.fn("readPacked")(function* (from: string) {
+	const fs = yield* FileSystem.FileSystem;
+	const path = yield* Path.Path;
+	const found: Array<{ readonly directory: string; readonly packed: Packed }> = [];
+	for (const entry of (yield* fs.readDirectory(from)).sort()) {
+		const directory = path.join(from, entry);
+		const file = path.join(directory, PACKED);
+		// Trust boundary: files an earlier step (CI's pack job) wrote.
+		if (yield* fs.exists(file))
+			found.push({ directory, packed: yield* fs.readFileString(file).pipe(Effect.flatMap(decodePacked)) });
+	}
+	return found;
+});
+
+const decodePacked = Schema.decodeUnknownEffect(Schema.fromJsonString(Packed));
+
+/** What `publish` did on npm with a packed facade: a dry run's check carries what npm said of the tarball. */
+export type NpmOutcome =
+	| { readonly kind: "published" }
+	| { readonly kind: "checked"; readonly output: string }
+	| { readonly kind: "present" }
+	| { readonly kind: "bootstrap" };
+
+/** What `publish` did with a packed facade, on npm and on GitHub. */
+export interface PublishOutcome {
+	readonly packed: Packed;
+	readonly npm: NpmOutcome;
+	readonly github: "created" | "present" | "skipped";
+}
+
+/**
+ * Publishes a facade `pack` wrote into `directory` on npm unless npm has its version, then makes its GitHub release
+ * unless it exists, so a run that stopped between them is finished by the next. A package npm has never seen is left
+ * (`bootstrap` first). A dry run lets npm check the tarball (`npm publish --dry-run`), a package npm has never seen
+ * too, and makes no GitHub release.
+ */
+export const publish = Effect.fn("publish")(function* (
+	directory: string,
+	packed: Packed,
+	root: string,
+	dryRun: boolean,
+) {
+	const path = yield* Path.Path;
+	const npm = yield* publishOnNpm(path.join(directory, packed.tarball), packed, directory, dryRun);
+	if (dryRun || npm.kind === "bootstrap") return { packed, npm, github: "skipped" } satisfies PublishOutcome;
+	if (yield* onGitHub(packed.tag, root)) return { packed, npm, github: "present" } satisfies PublishOutcome;
 	const created = yield* runCommand(
 		"gh",
 		[
 			"release",
 			"create",
-			tag,
+			packed.tag,
 			"--repo",
 			PACKAGES_REPOSITORY,
 			"--target",
-			head,
-			"--prerelease",
+			packed.commit,
+			// The facades share the repository's releases: none of them is the repository's latest.
+			"--latest=false",
 			"--title",
-			`${recipe.name} ${version}`,
+			`${packed.name} ${packed.version}`,
 			"--notes-file",
-			notes,
-			...assets,
+			path.join(directory, NOTES),
+			...(packed.demo === undefined ? [] : [path.join(directory, packed.demo)]),
 		],
 		root,
 	);
 	if (created.exitCode !== 0) return yield* new StepError({ step: "gh release", reason: tail(created.output) });
-	return { tag, url };
-}, Effect.scoped);
+	return { packed, npm, github: "created" } satisfies PublishOutcome;
+});
+
+/**
+ * Publishes `tarball` on npm unless npm has its version or has never seen its package; npm takes the workflow's identity
+ * in CI (trusted publishing), which needs PUBLISHING_NPM. A dry run lets npm check it, whatever npm holds of the
+ * package but the version itself.
+ */
+const publishOnNpm = Effect.fn("publishOnNpm")(function* (
+	tarball: string,
+	packed: Packed,
+	directory: string,
+	dryRun: boolean,
+) {
+	const npm = yield* published(packed.name);
+	if (npm.kind === "present" && npm.versions.includes(packed.version)) return { kind: "present" } satisfies NpmOutcome;
+	if (npm.kind === "absent" && !dryRun) return { kind: "bootstrap" } satisfies NpmOutcome;
+	if (!dryRun)
+		yield* requireNpm(PUBLISHING_NPM, "publishing through the workflow's identity, with no token", directory);
+	const result = yield* runCommand(
+		"npm",
+		["publish", tarball, "--access", "public", "--ignore-scripts", ...(dryRun ? ["--dry-run"] : [])],
+		directory,
+	);
+	if (result.exitCode !== 0) {
+		return yield* new StepError({
+			step: "npm publish",
+			reason: `${packed.name}@${packed.version}: ${tail(result.output)}`,
+		});
+	}
+	return dryRun
+		? ({ kind: "checked", output: tail(result.output) } satisfies NpmOutcome)
+		: ({ kind: "published" } satisfies NpmOutcome);
+});
 
 /** What `sync` did with one target. */
 export type Synced =
@@ -594,7 +784,8 @@ function tail(output: string): string {
 	return output.trim().split("\n").slice(-40).join("\n");
 }
 
-const readRecipe = Effect.fn("readRecipe")(function* (files: TargetFiles) {
+/** Reads a target's `recipe.json`. */
+export const readRecipe = Effect.fn("readRecipe")(function* (files: TargetFiles) {
 	const fs = yield* FileSystem.FileSystem;
 	const recipe: Recipe = yield* fs.readFileString(files.recipe).pipe(Effect.flatMap(decodeRecipe));
 	return recipe;

@@ -6,7 +6,14 @@
 import { Effect, FileSystem, Path } from "effect";
 import { EFFECT_PLUGIN } from "./diagnostics.ts";
 import { docsFiles, type TestDocs } from "./docs.ts";
-import { description, facadeVersion, passthroughCandidates, type Recipe, wrappedExports } from "./recipe.ts";
+import {
+	description,
+	facadeRepository,
+	facadeVersion,
+	passthroughCandidates,
+	type Recipe,
+	wrappedExports,
+} from "./recipe.ts";
 import {
 	agreedSignal,
 	borrowedMethods,
@@ -45,7 +52,7 @@ import { uiFiles } from "./ui-facade.ts";
 import { type Export, type Handle, isIdentifierName, type Signature, type Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
-export const ENGINE_VERSION = "0.4.0";
+export const ENGINE_VERSION = "0.5.0";
 
 /** Pinned versions a generated package builds with; the analyzer reads upstream with the same Node types. */
 export const TOOLCHAIN = {
@@ -66,19 +73,20 @@ const NO_TESTS: TestDocs = { examples: [], tests: 0, demos: [] };
 export const generate = Effect.fn("generate")(function* (surface: Surface, recipe: Recipe, tests: TestDocs = NO_TESTS) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
+	const version = yield* facadeVersion(recipe);
 	// The runtimes are copied as source, so the released engine ships src/runtime beside dist/: `../src/runtime`
 	// resolves from both. A path, not the URL's `pathname`, which keeps `%20` for a space.
 	const runtimes = path.join(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))), "..", "src", "runtime");
 	if (recipe.ui !== undefined) {
 		const uiRuntime = yield* fs.readFileString(path.join(runtimes, "ui.ts"));
 		return new Map([
-			...uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime),
-			...docsFiles(surface, recipe, tests, ENGINE_VERSION),
+			...uiFiles(surface, recipe, version, (what) => header(recipe, what), uiRuntime),
+			...docsFiles(surface, recipe, version, tests, ENGINE_VERSION),
 		]) satisfies Files;
 	}
 	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
-		["package.json", packageJson(recipe)],
+		["package.json", packageJson(recipe, version)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/index.ts", indexSource(surface, recipe)],
@@ -86,7 +94,7 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 			"src/internal/effectify.ts",
 			`${header(recipe, "the runtime of @effectified/engine, copied verbatim")}${runtime}`,
 		],
-		...docsFiles(surface, recipe, tests, ENGINE_VERSION),
+		...docsFiles(surface, recipe, version, tests, ENGINE_VERSION),
 	]);
 	return files satisfies Files;
 });
@@ -1370,17 +1378,19 @@ function lowerFirst(name: string): string {
 	return `${name.charAt(0).toLowerCase()}${name.slice(1)}`;
 }
 
-function packageJson(recipe: Recipe): string {
+function packageJson(recipe: Recipe, version: string): string {
 	const dependencies: Record<string, string> = { ...recipe.typeDependencies, [recipe.package]: recipe.version };
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	return `${JSON.stringify(
 		{
 			name: recipe.name,
-			// A facade's version is its upstream's: @effectified/sharp@0.35.5 wraps sharp@0.35.5.
-			version: facadeVersion(recipe),
+			// Upstream's major.minor and the facade's release in it (`facadeVersion`); upstream's exact version is the
+			// dependency below.
+			version,
 			description: description(recipe),
 			type: "module",
 			license: "MIT",
+			repository: facadeRepository(recipe),
 			exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },
 			files: ["dist", "README.md", "SKILL.md"],
 			scripts: {

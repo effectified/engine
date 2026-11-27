@@ -148,10 +148,11 @@ export const Recipe = Schema.Struct({
 		}),
 	),
 	/**
-	 * The facade's revision for this upstream version, from 1. A facade's version is its upstream's; a fixed facade
-	 * of the same upstream is released as `<version>+<revision>`, since a release is never replaced.
+	 * The facade's release within its upstream's major.minor, from 1: it starts at 1 for a new major.minor and goes up
+	 * by one for every later release in it, whether upstream moved a patch or the facade was fixed. It makes the
+	 * facade's npm version (`facadeVersion`), since a release is never replaced. Unset is 1.
 	 */
-	revision: Schema.optional(Schema.Number),
+	revision: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
 	/**
 	 * Packages the facade's declarations name (`import("typed-query-selector/parser")` in a kept upstream type), at
 	 * the range upstream depends on each: `reconcile` finds them in the emitted declarations.
@@ -163,15 +164,64 @@ export const Recipe = Schema.Struct({
 });
 export type Recipe = typeof Recipe.Type;
 
-/** The facade's version: upstream's, with `+<revision>` from the second revision on. */
-export function facadeVersion(recipe: Recipe): string {
-	return recipe.revision === undefined || recipe.revision <= 1
-		? recipe.version
-		: `${recipe.version}+${recipe.revision}`;
+/** A facade has no npm version: upstream's version is a prerelease, or no `major.minor.patch`. */
+export class VersionError extends Schema.TaggedError<VersionError, { readonly brand: unique symbol }>()(
+	"VersionError",
+	{
+		package: Schema.String,
+		version: Schema.String,
+		reason: Schema.String,
+	},
+) {}
+
+/**
+ * The facade's npm version, DefinitelyTyped's scheme: `<upstream major>.<upstream minor>.<revision - 1>`, so
+ * `@effectified/nodemailer@10.6.6` is the seventh release for nodemailer 10.6, whose exact version its package depends
+ * on. npm drops `+build` metadata, so a fix cannot be told from upstream's version by it. A prerelease of upstream's
+ * has no such version: it would be published as a release of its major.minor.
+ */
+export const facadeVersion = Effect.fn("facadeVersion")(function* (recipe: Recipe) {
+	const release = releaseVersion(recipe.version);
+	if (release === undefined) {
+		return yield* new VersionError({
+			package: recipe.package,
+			version: recipe.version,
+			reason: recipe.version.includes("-")
+				? "a prerelease: a facade's version (`<major>.<minor>.<n>`, n counting its releases for that major.minor) cannot tell it from a release, so the facade is published only for a release of upstream's"
+				: "not a `major.minor.patch` version, which a facade's version (`<major>.<minor>.<n>`) is made from",
+		});
+	}
+	return `${release.major}.${release.minor}.${(recipe.revision ?? 1) - 1}`;
+});
+
+/** The major and minor of a release's version (`10.6.1`), or nothing for a prerelease or anything else. */
+function releaseVersion(version: string): { readonly major: string; readonly minor: string } | undefined {
+	const [, major, minor] = /^(\d+)\.(\d+)\.\d+$/.exec(version) ?? [];
+	return major === undefined || minor === undefined ? undefined : { major, minor };
+}
+
+/**
+ * The revision a redraft at upstream's `version` gives the facade: the same at the same version, one more at another
+ * version of the same major.minor (each is one more release the facade's version counts), and none, the first, for a
+ * new major.minor or a new facade.
+ */
+export function redraftedRevision(previous: Recipe | undefined, version: string): number | undefined {
+	if (previous === undefined) return undefined;
+	if (previous.version === version) return previous.revision;
+	const before = releaseVersion(previous.version);
+	const after = releaseVersion(version);
+	return before !== undefined && after !== undefined && before.major === after.major && before.minor === after.minor
+		? (previous.revision ?? 1) + 1
+		: undefined;
 }
 
 /** The repository facades live in and are released from: the engine makes them, the community keeps them there. */
 export const PACKAGES_REPOSITORY = "effectified/packages";
+
+/** A facade's directory in PACKAGES_REPOSITORY, under `targets/`: `@codemirror/view` is `codemirror__view`. */
+export function targetDirectory(recipe: Recipe): string {
+	return recipe.package.replace(/^@/, "").replace("/", "__");
+}
 
 /** A facade's description, the first line of its package.json, its README and its skill. */
 export function description(recipe: Recipe): string {
@@ -180,7 +230,23 @@ export function description(recipe: Recipe): string {
 		: `${recipe.package} for Effect UI: typed bindings and mounts, its events as messages, its instances scoped to their elements`;
 }
 
-/** The site that lists every facade, each with a page `/<slug>` and its newest release at `/<slug>.tgz`. */
+/**
+ * The facade's `repository` in its package.json, PACKAGES_REPOSITORY: npm publishes a package through a workflow's
+ * identity only when this names the workflow's repository, and the provenance attestation it makes names it too.
+ */
+export function facadeRepository(recipe: Recipe): {
+	readonly type: "git";
+	readonly url: string;
+	readonly directory: string;
+} {
+	return {
+		type: "git",
+		url: `git+https://github.com/${PACKAGES_REPOSITORY}.git`,
+		directory: `targets/${targetDirectory(recipe)}/package`,
+	};
+}
+
+/** The site that lists every facade, each with a page `/<slug>`. */
 export const SITE = "https://effectified.dev";
 
 /** The facade's name without its scope: `@effectified/sharp` is `sharp`. */
@@ -188,24 +254,19 @@ export function slug(recipe: Recipe): string {
 	return recipe.name.replace(/^@effectified\//, "");
 }
 
-/** The URL that always installs the facade's newest release: effectified.dev redirects it to that release's tarball. */
-export function latestUrl(recipe: Recipe): string {
-	return `${SITE}/${slug(recipe)}.tgz`;
+/** The tag of the facade's release at `version` (its `facadeVersion`): `<slug>-v<version>`. */
+export function releaseTag(recipe: Recipe, version: string): string {
+	return `${slug(recipe)}-v${version}`;
 }
 
-/** The facade's release tag, `<name>-v<version>`. */
-export function releaseTag(recipe: Recipe): string {
-	return `${slug(recipe)}-v${facadeVersion(recipe)}`;
+/** Where `effectify publish` puts a frontend facade's built demo: an asset of its GitHub release at `version`. */
+export function demoUrl(recipe: Recipe, version: string): string {
+	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe, version)}/${demoArchive(recipe, version)}`;
 }
 
-/** Where `effectify release` publishes a frontend facade's built demo, beside its tarball. */
-export function demoUrl(recipe: Recipe): string {
-	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${slug(recipe)}-${facadeVersion(recipe)}-demo.tgz`;
-}
-
-/** Where `effectify release` publishes a facade: the tarball of its release on PACKAGES_REPOSITORY. */
-export function releaseUrl(recipe: Recipe): string {
-	return `https://github.com/${PACKAGES_REPOSITORY}/releases/download/${releaseTag(recipe)}/effectified-${slug(recipe)}-${facadeVersion(recipe)}.tgz`;
+/** The file name of a frontend facade's built demo at `version`. */
+export function demoArchive(recipe: Recipe, version: string): string {
+	return `effectified-${slug(recipe)}-${version}-demo.tgz`;
 }
 
 /** Reads a stored recipe; files are a trust boundary. */
@@ -213,6 +274,11 @@ export const decodeRecipe = Schema.decodeUnknownEffect(Schema.fromJsonString(Rec
 
 /** The Effect UI snapshot frontend facades build against: a commit of Effect-TS/ui, published on pkg.pr.new. */
 export const EFFECT_UI = "2fd1a57";
+
+/** The URL of Effect UI's snapshot build at `commit` (a recipe's `ui.effectUi`), which a frontend facade installs. */
+export function effectUiUrl(commit: string): string {
+	return `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${commit}`;
+}
 
 /** Drafts a recipe from a surface, the scan and the package README; keeps the decisions of `previous` not made by the engine. */
 export const draftRecipe = Effect.fn("draftRecipe")(function* (
@@ -353,6 +419,7 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 		borrowCandidates(surface, handles).join(", ") || "none",
 		"the engine's rule, for a person to confirm (the types cannot tell): a method named after the handle it returns (`page`, `pages`, `asPage`, `waitForTarget`) finds one that exists; a synchronous method returning its own handle's type returns the receiver (`on`, `move`) unless it is named a copy (`clone`, `copy`, `duplicate`), and one returning a type the receiver holds as a property returns that one; any other method returning a releasable handle made it: an Effect acquires it in the caller's scope, and a synchronous call hands the caller its facade, release methods and all; an Effect resolving to a list of them made each (`$$`) unless it is named after them (`pages`), and a synchronous call's list is always borrowed",
 	);
+	const revision = redraftedRevision(previous, surface.version);
 
 	return {
 		$schema: "https://effectified.dev/schema/recipe.json",
@@ -388,10 +455,7 @@ export const draftRecipe = Effect.fn("draftRecipe")(function* (
 						.map((method) => method.trim())
 						.filter((method) => method.length > 0),
 		...(previous?.typeDependencies === undefined ? {} : { typeDependencies: previous.typeDependencies }),
-		// A new upstream version starts again at revision 1.
-		...(previous?.revision !== undefined && previous.version === surface.version
-			? { revision: previous.revision }
-			: {}),
+		...(revision === undefined ? {} : { revision }),
 		...(ui === undefined ? {} : { ui }),
 		decisions,
 	} satisfies Recipe;

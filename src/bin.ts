@@ -3,24 +3,29 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Console, Effect, FileSystem, Layer, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
+import { temporaryDirectory } from "./command.ts";
 import { drift, driftMarkdown } from "./drift.ts";
 import { ENGINE_VERSION } from "./generate.ts";
+import { bootstrap, ENGINE_PUBLISHER, notBootstrapped, type Publisher, TRUSTED_WORKFLOW, warning } from "./npm.ts";
 import { plan, planMarkdown } from "./plan.ts";
 import { usages, usagesMarkdown } from "./usages.ts";
 import {
 	build,
 	draft,
-	isReleased,
 	listTargets,
+	packRelease,
+	publish,
+	readPacked,
+	readRecipe,
 	reconcile,
-	release,
+	releaseCommit,
 	study,
 	sync,
 	targetFiles,
 	test,
 	verify,
 } from "./pipeline.ts";
-import { decodeRecipe } from "./recipe.ts";
+import { decodeRecipe, PACKAGES_REPOSITORY } from "./recipe.ts";
 import { decodeSurface } from "./surface.ts";
 import type { Recipe } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
@@ -208,27 +213,190 @@ const usagesCommand = Command.make(
 	Command.withDescription("List where an application uses a library, as a checklist for moving it onto the facade"),
 );
 
+const dryRun = Flag.Boolean("dry-run").pipe(
+	Flag.withDescription(
+		"Publish nothing: npm checks each tarball (`npm publish --dry-run`), packages it has never seen too",
+	),
+	Flag.withDefault(false),
+);
+
 const releaseCommand = Command.make(
 	"release",
 	{
 		packageName: Argument.String("package").pipe(
-			Argument.withDescription("A target's npm name; every target whose version is not released yet when left out"),
+			Argument.withDescription("A target's npm name; every target when left out"),
 			Argument.optional,
 		),
 		out,
+		dryRun,
 	},
-	({ packageName, out }) =>
+	({ packageName, out, dryRun }) =>
 		Effect.gen(function* () {
-			const names = Option.isSome(packageName) ? [packageName.value] : yield* listTargets(out);
-			for (const name of names) {
-				const files = yield* targetFiles(out, name);
-				// Without a name, a released version is skipped: a release is never replaced, and CI runs this on every push.
-				if (Option.isNone(packageName) && (yield* isReleased(files, process.cwd()))) continue;
-				const released = yield* release(files, process.cwd());
-				yield* Console.log(`released ${released.tag}: ${released.url}`);
+			const root = process.cwd();
+			const commit = yield* releaseCommit(root, dryRun);
+			const into = yield* temporaryDirectory("effectified-releases-");
+			yield* packAll(
+				Option.isSome(packageName) ? [packageName.value] : yield* listTargets(out),
+				out,
+				commit,
+				into,
+				dryRun,
+			);
+			yield* publishAll(into, dryRun);
+		}).pipe(Effect.scoped),
+).pipe(
+	Command.withDescription(
+		"Publish on npm every facade whose version npm lacks, and make its GitHub release (`pack`, then `publish`)",
+	),
+);
+
+const packCommand = Command.make(
+	"pack",
+	{
+		into: Argument.String("directory").pipe(Argument.withDescription("Where the packed facades are written")),
+		packageName: Argument.String("package").pipe(
+			Argument.withDescription("A target's npm name; every target when left out"),
+			Argument.optional,
+		),
+		out,
+		dryRun,
+	},
+	({ into, packageName, out, dryRun }) =>
+		Effect.gen(function* () {
+			const commit = yield* releaseCommit(process.cwd(), dryRun);
+			yield* packAll(
+				Option.isSome(packageName) ? [packageName.value] : yield* listTargets(out),
+				out,
+				commit,
+				into,
+				dryRun,
+			);
+		}),
+).pipe(
+	Command.withDescription(
+		"Build, import in Node and pack every facade whose version npm or its GitHub release lacks (a release's first half, which runs upstream's code)",
+	),
+);
+
+const publishCommand = Command.make(
+	"publish",
+	{
+		from: Argument.String("directory").pipe(Argument.withDescription("Where `pack` wrote the packed facades")),
+		dryRun,
+	},
+	({ from, dryRun }) => publishAll(from, dryRun),
+).pipe(
+	Command.withDescription(
+		"Publish on npm what `pack` packed, unless npm has it, and make each GitHub release that is missing (a release's second half)",
+	),
+);
+
+/** The step that makes a facade known to npm, run in effectified/packages. */
+const FACADE_BOOTSTRAP = "pnpm effectify bootstrap";
+
+/** Packs each of `names` whose release has something to do into `into`, saying what it did with each. */
+const packAll = Effect.fn("packAll")(function* (
+	names: ReadonlyArray<string>,
+	out: string,
+	commit: string,
+	into: string,
+	dryRun: boolean,
+) {
+	for (const name of names) {
+		const outcome = yield* packRelease(yield* targetFiles(out, name), commit, into, process.cwd(), dryRun);
+		const { recipe, version, tag, plan } = outcome.planned;
+		switch (outcome.kind) {
+			case "released":
+				yield* Console.log(`${recipe.name} ${version}: on npm, with its GitHub release ${tag}`);
+				break;
+			case "bootstrap":
+				yield* warning(`${notBootstrapped(recipe.name, FACADE_BOOTSTRAP)} Left out.`);
+				break;
+			case "packed":
+				if (plan === "bootstrap")
+					yield* warning(`${notBootstrapped(recipe.name, FACADE_BOOTSTRAP)} A dry run checks it all the same.`);
+				yield* Console.log(
+					`${recipe.name} ${version}: packed${plan === "announce" ? ", on npm already, for its GitHub release" : ""}`,
+				);
+		}
+	}
+});
+
+/** Publishes everything `pack` wrote into `from`, saying what it did with each. */
+const publishAll = Effect.fn("publishAll")(function* (from: string, dryRun: boolean) {
+	for (const { directory, packed } of yield* readPacked(from)) {
+		const outcome = yield* publish(directory, packed, process.cwd(), dryRun);
+		const what = `${packed.name} ${packed.version}`;
+		switch (outcome.npm.kind) {
+			case "bootstrap":
+				yield* warning(`${notBootstrapped(packed.name, FACADE_BOOTSTRAP)} Left out.`);
+				break;
+			case "checked":
+				yield* Console.log(`${what}: npm's dry run passed\n${outcome.npm.output.replace(/^/gm, "  ")}`);
+				break;
+			case "present":
+				yield* Console.log(`${what}: on npm already`);
+				break;
+			case "published":
+				yield* Console.log(`${what}: published on npm`);
+		}
+		if (outcome.github !== "skipped") {
+			yield* Console.log(
+				`${what}: GitHub release ${packed.tag} ${outcome.github === "created" ? "made" : "there already"}`,
+			);
+		}
+	}
+});
+
+const bootstrapCommand = Command.make(
+	"bootstrap",
+	{
+		out,
+		engine: Flag.Boolean("engine").pipe(
+			Flag.withDescription(`Make the engine's own package known to npm instead (${ENGINE_PUBLISHER.name})`),
+			Flag.withDefault(false),
+		),
+		dryRun: Flag.Boolean("dry-run").pipe(
+			Flag.withDescription(
+				"Change nothing and sign in nowhere: npm checks each placeholder and shows each trusted publisher",
+			),
+			Flag.withDefault(false),
+		),
+	},
+	({ out, engine, dryRun }) =>
+		Effect.gen(function* () {
+			const publishers = engine ? [ENGINE_PUBLISHER] : yield* facadePublishers(out);
+			const done = yield* bootstrap(publishers, dryRun, process.cwd());
+			const repository = engine ? ENGINE_PUBLISHER.repository : PACKAGES_REPOSITORY;
+			yield* Console.log(
+				`${done.packages} package(s): ${done.placeholders} placeholder(s) ${dryRun ? "checked by npm" : "published"}, ${done.trusted} trusted publisher(s) ${dryRun ? "shown" : "set"} (${repository}, ${TRUSTED_WORKFLOW})`,
+			);
+			if (!dryRun && done.trusted > 0) {
+				yield* Console.log(
+					[
+						`npm lets a new trusted publisher expire unless it publishes within two days: release now, by running the newest run of ${repository}'s ${TRUSTED_WORKFLOW} again (or by a push to main):`,
+						`  gh run rerun "$(gh run list -R ${repository} -w ${TRUSTED_WORKFLOW} -L 1 --json databaseId --jq '.[0].databaseId')" -R ${repository}`,
+					].join("\n"),
+				);
 			}
 		}),
-).pipe(Command.withDescription("Build, pack and release facades on GitHub (from a clean, pushed tree)"));
+).pipe(
+	Command.withDescription(
+		"Once, signed in to npm: publish a placeholder of each facade npm has never seen and set its trusted publisher, so CI publishes it with no token",
+	),
+);
+
+/** Every facade under `out`, published from PACKAGES_REPOSITORY. */
+const facadePublishers = Effect.fn("facadePublishers")(function* (out: string) {
+	const publishers: Array<Publisher> = [];
+	for (const name of yield* listTargets(out)) {
+		publishers.push({
+			name: (yield* readRecipe(yield* targetFiles(out, name))).name,
+			repository: PACKAGES_REPOSITORY,
+		});
+	}
+	return publishers;
+});
 
 const makeCommand = Command.make("make", { target, cache, out, ui }, ({ target, cache, out, ui }) =>
 	Effect.gen(function* () {
@@ -304,6 +472,9 @@ const effectify = Command.make("effectify").pipe(
 		planCommand,
 		usagesCommand,
 		releaseCommand,
+		packCommand,
+		publishCommand,
+		bootstrapCommand,
 	]),
 );
 
