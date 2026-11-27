@@ -4,17 +4,57 @@
 // inputs write the same bytes.
 
 import { Effect, FileSystem, Path } from "effect";
+import { EFFECT_PLUGIN } from "./diagnostics.ts";
 import { docsFiles, type TestDocs } from "./docs.ts";
-import { description, facadeVersion, passthroughCandidates, type Recipe } from "./recipe.ts";
-import { agreedSignal, callbackMethods, classified, type SignalSlot, signalSlots, wrappedMethods, wrappedProperties } from "./methods.ts";
+import { description, facadeVersion, passthroughCandidates, type Recipe, wrappedExports } from "./recipe.ts";
+import {
+	agreedSignal,
+	borrowedMethods,
+	callbackMethods,
+	chosenHandles,
+	classified,
+	isOptional,
+	keptReleases,
+	listedHandle,
+	listedHandles,
+	mixedMethods,
+	optionMethods,
+	presentHandle,
+	releaseMethods,
+	returnedHandles,
+	type SignalSlot,
+	signalSlots,
+	wrappedMethods,
+	wrappedProperties,
+} from "./methods.ts";
+import {
+	brandNames,
+	brandsSource,
+	concealedPaths,
+	parameterRewrites,
+	pathsType,
+	propertyBrand,
+	type Rewrite,
+	resultRewrites,
+	rewriteChecks,
+	rewritesType,
+	secretPaths,
+	secretsValue,
+} from "./rewrites.ts";
 import { uiFiles } from "./ui-facade.ts";
-import type { Export, Handle, Signature, Surface } from "./surface.ts";
+import { type Export, type Handle, isIdentifierName, type Signature, type Surface } from "./surface.ts";
 
 /** The engine's version, written into every generated file. */
-export const ENGINE_VERSION = "0.3.0";
+export const ENGINE_VERSION = "0.4.0";
 
 /** Pinned versions a generated package builds with; the analyzer reads upstream with the same Node types. */
-export const TOOLCHAIN ={ effect: "4.1.5", typescript: "7.0.2", "@types/node": "26.6.7", vitest: "5.1.1", "@effect/vitest": "4.1.5" } as const;
+export const TOOLCHAIN = {
+	effect: "4.1.5",
+	typescript: "7.0.2",
+	"@types/node": "26.6.7",
+	vitest: "5.1.1",
+	"@effect/vitest": "4.1.5",
+} as const;
 
 /** Files of a generated package, by path relative to the package. */
 export type Files = ReadonlyMap<string, string>;
@@ -27,11 +67,14 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	// The runtimes are copied as source, so the released engine ships src/runtime beside dist/: `../src/runtime`
-	// resolves from both.
-	const runtimes = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "runtime");
+	// resolves from both. A path, not the URL's `pathname`, which keeps `%20` for a space.
+	const runtimes = path.join(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))), "..", "src", "runtime");
 	if (recipe.ui !== undefined) {
 		const uiRuntime = yield* fs.readFileString(path.join(runtimes, "ui.ts"));
-		return new Map([...uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime), ...docsFiles(surface, recipe, tests, ENGINE_VERSION)]) satisfies Files;
+		return new Map([
+			...uiFiles(surface, recipe, (what) => header(recipe, what), uiRuntime),
+			...docsFiles(surface, recipe, tests, ENGINE_VERSION),
+		]) satisfies Files;
 	}
 	const runtime = yield* fs.readFileString(path.join(runtimes, "effectify.ts"));
 	const files = new Map<string, string>([
@@ -39,7 +82,10 @@ export const generate = Effect.fn("generate")(function* (surface: Surface, recip
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/index.ts", indexSource(surface, recipe)],
-		["src/internal/effectify.ts", `${header(recipe, "the runtime of @effectified/engine, copied verbatim")}${runtime}`],
+		[
+			"src/internal/effectify.ts",
+			`${header(recipe, "the runtime of @effectified/engine, copied verbatim")}${runtime}`,
+		],
 		...docsFiles(surface, recipe, tests, ENGINE_VERSION),
 	]);
 	return files satisfies Files;
@@ -67,7 +113,7 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 	const usesServices = recipe.services.length > 0;
 	push(
 		header(recipe, "the Effect facade").trimEnd(),
-		`import { ${usesServices ? "Context, type Effect, Layer, " : ""}Schema${usesServices ? ", type Scope" : ""} } from "effect";`,
+		`import { ${usesServices ? "Context, type Effect, Layer, " : ""}${sealsFields(surface, recipe) ? "Redacted, " : ""}Schema${usesServices ? ", type Scope" : ""} } from "effect";`,
 		`import * as Upstream from ${JSON.stringify(recipe.package)};`,
 		`import * as Effectify from "./internal/effectify.ts";`,
 		"",
@@ -79,47 +125,38 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		`export type * from ${JSON.stringify(recipe.package)};`,
 		"",
 	);
-	const passed = (recipe.passthrough ?? passthroughCandidates(surface, recipe.exports)).filter((name) => !declaredNames(surface, recipe).has(name));
-	if (passed.length > 0) {
+	const values = valueExports(surface, recipe);
+	if (values.kind === "reexported" && values.names.length > 0) {
 		push(
 			"/** Upstream's values that need no wrapping, as they are: constants, pure functions, plain classes. */",
-			`export { ${passed.join(", ")} } from ${JSON.stringify(recipe.package)};`,
+			`export { ${values.names.map(memberName).join(", ")} } from ${JSON.stringify(recipe.package)};`,
 			"",
 		);
 	}
 
-	// Errors
-	const catchAll = recipe.errors.at(-1);
-	const carried = (error: (typeof recipe.errors)[number]) => (error.instanceOf === undefined ? [] : upstreamFields(surface, error.instanceOf, error.codes.length > 0));
-	for (const error of recipe.errors) {
-		const doc =
-			error.instanceOf !== undefined
-				? `${recipe.package} failed with its \`${error.instanceOf}\`${carried(error).length === 0 ? "" : `, whose ${carried(error).map((field) => `\`${field.upstream}\``).join(", ")} it carries`}.`
-				: `Any other failure of ${recipe.package}; \`code\` carries upstream's error code when it has one.`;
-		const fields = carried(error);
-		const schema = fields.length === 0 ? "Effectify.errorFields" : `{ ...Effectify.errorFields, ${fields.map((field) => `${memberName(field.name)}: ${field.schema}`).join(", ")} }`;
-		push(`/** ${doc} */`, `export class ${error.tag} extends Schema.TaggedError<${error.tag}>()(${JSON.stringify(error.tag)}, ${schema}) {}`, "");
+	push(...errorsSource(surface, recipe), ...brandsSource(recipe));
+	if (wrapped.length > 0 && conceals(recipe)) {
+		const paths = concealedPaths(recipe);
+		push(
+			"/** Where a property's value or a method's result may hold a secret the recipe names (its path past the argument), at any depth: shown as `Redacted`. */",
+			`type Concealed = ${pathsType(paths)};`,
+			"/** The paths of `Concealed`, for the runtime. */",
+			`const concealed: ReadonlyArray<Effectify.SecretPath> = ${secretsValue(paths)};`,
+			"",
+		);
 	}
-	push(`/** Every failure of the facade. */`, `export type Failure = ${recipe.errors.map((error) => error.tag).join(" | ")};`, "");
-	push("const classify: Effectify.Classify<Failure> = (operation, cause) => {", "\tconst fields = Effectify.describe(operation, cause);");
-	for (const error of recipe.errors.slice(0, -1)) {
-		// `instanceof` narrows `cause` to upstream's class: each field it carries is copied with its own type.
-		const copies = carried(error).map((field) => `${memberName(field.name)}: cause${propertyAccess(field.upstream)}`);
-		if (error.instanceOf !== undefined) {
-			push(`\tif (cause instanceof Upstream.${error.instanceOf}) return new ${error.tag}(${copies.length === 0 ? "fields" : `{ ...fields, ${copies.join(", ")} }`});`);
-		}
-		if (error.codes.length > 0) push(`\tif ([${error.codes.map((code) => JSON.stringify(code)).join(", ")}].includes(fields.code ?? "")) return new ${error.tag}(fields);`);
-	}
-	push(`\treturn new ${catchAll?.tag ?? `${recipe.prefix}Error`}(fields);`, "};", "");
 
 	// Handles
 	push(
-		"/** Each wrapped upstream handle, its facade, and whether acquiring one opens a scope. */",
+		"/** Each wrapped upstream handle, its facade, whether acquiring one opens a scope, and the methods that release it (a borrowed facade has none). */",
 		`type Handles =${wrapped.length === 0 ? " never" : ""}`,
 		...wrapped.map((name, index) => {
 			const handle = surface.handles[name];
-			const scoped = recipe.handles[name]?.release !== undefined;
-			return `\t| readonly [${handle?.typeRef}, ${name}, ${scoped}]${index === wrapped.length - 1 ? ";" : ""}`;
+			const releases = handle === undefined ? [] : releaseMethods(name, handle, recipe);
+			const kept = handle === undefined ? [] : keptReleases(name, handle, surface.handles, recipe);
+			const hidden = releases.filter((method) => !kept.includes(method));
+			const entry = releases.length === 0 ? "false" : hidden.length === 0 ? "true" : `true, ${unionOf(hidden)}`;
+			return `\t| readonly [${handle?.typeRef}, ${name}, ${entry}]${index === wrapped.length - 1 ? ";" : ""}`;
 		}),
 		"",
 	);
@@ -127,15 +164,26 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		const handle = surface.handles[name];
 		if (handle === undefined) continue;
 		const methods = wrappedMethods(name, handle.methods, recipe);
+		const borrowed = borrowedMethods(name, handle, recipe);
 		push(
 			`/** The methods of \`${name}\` the facade wraps: those ${recipe.package} declares itself. */`,
 			`type ${name}Methods = ${methods.length === 0 ? "never" : methods.map((method) => JSON.stringify(method)).join(" | ")};`,
 			`/** The methods of \`${name}\` that report through a trailing callback: Effects of what it reports. */`,
 			`type ${name}Callbacks = ${unionOf(Object.keys(callbackMethods(name, handle.methods, recipe)))};`,
+			`/** The async methods of \`${name}\` whose value may be absent: Effects of an \`Option\`. */`,
+			`type ${name}Optional = ${unionOf(optionMethods(name, handle.methods, recipe))};`,
+			...(borrowed.length === 0
+				? []
+				: [
+						`/** The methods of \`${name}\` whose handle the facade does not own (lookups of one ${recipe.package} already holds, the receiver itself, a handle it holds): borrowed, without its release methods, no \`Scope\`. */`,
+						`type ${name}Borrowed = ${unionOf(borrowed)};`,
+					]),
 			`/** The properties of \`${name}\` the facade reads through. */`,
 			`type ${name}Properties = ${unionOf(wrappedProperties(name, handle, recipe))};`,
+			`/** The members of \`${name}\` whose value the facade wraps (a handle's facade, a choice's, a list of them): any other member's value is upstream's, as typed. */`,
+			`type ${name}Facades = ${unionOf(facadeMembers(name, handle, recipe))};`,
 			"",
-			`/** A ${recipe.package} \`${name}\`: its async methods are Effects, its async iterables Streams, the handles it returns facades. */`,
+			`/** A ${recipe.package} \`${name}\`: its async methods are traced Effects (absent values \`Option\`s), its async iterables Streams, the handles it returns facades. */`,
 			...facadeInterface(name, handle, methods, surface, recipe),
 			"",
 		);
@@ -146,57 +194,92 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		if (handle === undefined) continue;
 		const picked = `Pick<${handle.typeRef}, ${name}Methods>`;
 		const methods = wrappedMethods(name, handle.methods, recipe);
+		// What a value must have to be this handle (a `mixed` result, a choice): every method upstream does not declare optional.
+		const required = methods.filter((method) => !(handle.optional ?? []).includes(method));
 		const asyncMethods = classified(name, handle.methods, recipe, "async");
 		const streamMethods = classified(name, handle.methods, recipe, "stream");
-		// A method's handle comes from the overloads the facade keeps: sharp's `toBuffer(callback)` returns a `Sharp`,
-		// while the `toBuffer()` the facade runs resolves to a Buffer.
-		const returns = methods
-			.flatMap((method) => {
-				const isAsync = asyncMethods.includes(method);
-				const into = (handle.methods[method] ?? []).find(
-					(signature) =>
-						signature.traits.includes("async") === isAsync &&
-						!signature.traits.includes("callback") &&
-						signature.handle !== undefined &&
-						recipe.handles[signature.handle] !== undefined,
-				)?.handle;
-				return into === undefined ? [] : [`${JSON.stringify(method)}: ${JSON.stringify(into)}`];
-			})
+		const options = optionMethods(name, handle.methods, recipe);
+		const returns = returnedHandles(name, handle.methods, recipe)
+			.map(([method, into]) => `${quotedKey(method)}: ${JSON.stringify(into)}`)
 			.sort();
+		const mixed = mixedMethods(name, handle.methods, recipe).map((method) => `${quotedKey(method)}: true`);
+		const choices = chosenHandles(name, handle.methods, recipe).map(
+			([method, intos]) =>
+				`${quotedKey(method)}: [${narrowestFirst(intos, surface, recipe)
+					.map((into) => JSON.stringify(into))
+					.join(", ")}]`,
+		);
+		const borrowed = borrowedMethods(name, handle, recipe);
+		const lists = listedHandles(name, handle, recipe).map(
+			([member, into]) => `${quotedKey(member)}: ${JSON.stringify(into)}`,
+		);
 		const release = recipe.handles[name]?.release;
-		const signals = Object.entries(signalSlots(name, handle.methods, recipe)).map(([method, slot]) => `${JSON.stringify(method)}: ${slotSource(slot)}`);
+		const releases = releaseMethods(name, handle, recipe);
+		const kept = keptReleases(name, handle, surface.handles, recipe);
+		const signals = Object.entries(signalSlots(name, handle.methods, recipe)).map(
+			([method, slot]) => `${quotedKey(method)}: ${slotSource(slot)}`,
+		);
+		const untraced = methods.filter((method) => isUntraced(recipe, `${name}.${method}`));
+		const secrets = methods.flatMap((method) => {
+			const paths = secretPaths(recipe, `${name}.${method}`);
+			return paths.length === 0 ? [] : [`${quotedKey(method)}: ${secretsValue(paths)}`];
+		});
 		push(
 			`\t${name}: {`,
 			`\t\tname: ${JSON.stringify(name)},`,
 			"\t\tspec: {",
 			`\t\t\tmethods: [${methods.map((method) => JSON.stringify(method)).join(", ")}] satisfies ReadonlyArray<${name}Methods>,`,
-			`\t\t\tasync: ${record(asyncMethods.map((method) => `${JSON.stringify(method)}: true`))} satisfies Effectify.AsyncSpec<${picked}>,`,
-			`\t\t\tstream: ${record(streamMethods.map((method) => `${JSON.stringify(method)}: true`))} satisfies Effectify.StreamSpec<${picked}, Handles>,`,
+			...(required.length === methods.length
+				? []
+				: [
+						`\t\t\trequired: [${required.map((method) => JSON.stringify(method)).join(", ")}] satisfies ReadonlyArray<Effectify.RequiredMethods<${picked}>>,`,
+					]),
+			`\t\t\tasync: ${record(asyncMethods.map((method) => `${quotedKey(method)}: true`))} satisfies Effectify.AsyncSpec<${picked}>,`,
+			`\t\t\tstream: ${record(streamMethods.map((method) => `${quotedKey(method)}: true`))} satisfies Effectify.StreamSpec<${picked}, Handles>,`,
+			`\t\t\toption: ${record(options.map((method) => `${quotedKey(method)}: true`))} satisfies Effectify.OptionSpec<Pick<${handle.typeRef}, ${name}Optional>>,`,
 			`\t\t\treturns: ${record(returns)},`,
-			`\t\t\tcallback: ${record(Object.entries(callbackMethods(name, handle.methods, recipe)).map(([method, kind]) => `${JSON.stringify(method)}: ${JSON.stringify(kind)}`))} satisfies Record<${name}Callbacks, "node" | "done">,`,
+			...(mixed.length === 0 ? [] : [`\t\t\tmixed: ${record(mixed)},`]),
+			...(choices.length === 0 ? [] : [`\t\t\tchoices: ${record(choices)},`]),
+			...(lists.length === 0 ? [] : [`\t\t\tlists: ${record(lists)},`]),
+			...(borrowed.length === 0
+				? []
+				: [
+						`\t\t\tborrowed: ${record(borrowed.map((method) => `${quotedKey(method)}: true`))} satisfies Record<${name}Borrowed, true>,`,
+					]),
+			`\t\t\tcallback: ${record(Object.entries(callbackMethods(name, handle.methods, recipe)).map(([method, kind]) => `${quotedKey(method)}: ${JSON.stringify(kind)}`))} satisfies Record<${name}Callbacks, "node" | "done">,`,
 			`\t\t\tproperties: ${record(
 				wrappedProperties(name, handle, recipe).map((property) => {
-					const held = handle.properties[property]?.handle;
-					return `${JSON.stringify(property)}: ${held !== undefined && recipe.handles[held] !== undefined ? JSON.stringify(held) : "true"}`;
+					const held = heldHandle(handle, property, recipe);
+					return `${quotedKey(property)}: ${held === undefined ? "true" : JSON.stringify(held)}`;
 				}),
 			)} satisfies Record<${name}Properties, string | true>,`,
+			...(conceals(recipe) ? ["\t\t\tconcealed,"] : []),
 			...(signals.length === 0 ? [] : [`\t\t\tsignal: ${record(signals)},`]),
+			...(untraced.length === 0
+				? []
+				: [`\t\t\tuntraced: ${record(untraced.map((method) => `${quotedKey(method)}: true`))},`]),
+			...(secrets.length === 0 ? [] : [`\t\t\tsecrets: ${record(secrets)},`]),
 			"\t\t},",
 			...(release === undefined ? [] : [`\t\trelease: ${JSON.stringify(release)},`]),
+			...(releases.length <= 1
+				? []
+				: [`\t\treleases: [${releases.map((method) => JSON.stringify(method)).join(", ")}],`]),
+			...(kept.length === 0 ? [] : [`\t\tkept: [${kept.map((method) => JSON.stringify(method)).join(", ")}],`]),
 			"\t},",
 		);
 	}
 	push("} satisfies Record<string, Effectify.HandleKind>;", "");
+	push(...givesChecks(surface, recipe, wrapped));
+	push(...rewriteChecks(surface, recipe, wrapped, writtenCalls(surface, recipe, wrapped)));
 
 	// Exports
-	for (const item of surface.exports.filter((candidate) => recipe.exports.includes(candidate.name))) {
-		push(...exportSource(item, surface, recipe), "");
-	}
+	for (const item of wrappedExports(surface, recipe)) push(...exportSource(item, surface, recipe), "");
 
 	// Services
 	for (const service of recipe.services) {
+		const released = recipe.handles[service.handle]?.release === undefined ? "" : ", released with the layer";
 		push(
-			`/** A ${recipe.package} \`${service.handle}\` as a service; \`layer\` provides the one \`make\` acquires (\`${service.acquire}\` in facade form), released with the layer. */`,
+			`/** A ${recipe.package} \`${service.handle}\` as a service; \`layer\` provides the one \`make\` acquires (\`${service.acquire}\` in facade form)${released}. */`,
 			`export class ${service.name} extends Context.Service<${service.name}, ${service.handle}>()(${JSON.stringify(`${recipe.name}/${service.name}`)}) {`,
 			`\tstatic readonly layer = <E>(make: Effect.Effect<${service.handle}, E, Scope.Scope>) => Layer.effect(${service.name}, make);`,
 			"}",
@@ -206,7 +289,9 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 
 	// Events, under one export keyed by handle: `<Handle>Events` would collide with handles named so (BullMQ's
 	// `QueueEvents`).
-	const emitters = Object.entries(recipe.handles).filter(([name, handleRecipe]) => handleRecipe.events.length > 0 && wrapped.includes(name));
+	const emitters = Object.entries(recipe.handles).filter(
+		([name, handleRecipe]) => handleRecipe.events.length > 0 && wrapped.includes(name),
+	);
 	const typedEmitters = emitters.filter(([name]) => keyedListeners(surface.handles[name]));
 	for (const [name] of typedEmitters) {
 		push(
@@ -216,14 +301,23 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 		);
 	}
 	if (emitters.length > 0) {
-		push("/** Events of the wrapped handles as Streams of each emission's arguments, as upstream types them, listening for as long as the stream runs. */", "export const events = {");
+		push(
+			"/**",
+			" * Events of the wrapped handles as Streams of each emission's arguments, as upstream types them, listening for as",
+			" * long as the stream runs, under a span `<Handle>.events.<event>`. An emitter cannot be paused: the buffer is",
+			' * unbounded unless `options` bounds it (`{ bufferSize: 16 }` keeps the newest, `strategy: "dropping"` the oldest).',
+			" */",
+			"export const events = {",
+		);
 		for (const [name, handleRecipe] of emitters) {
 			const typed = typedEmitters.some(([typedName]) => typedName === name);
 			push(
 				`\t${name}: {`,
 				...handleRecipe.events.map((event) => {
-					const args = typed ? `<Parameters<Parameters<typeof emitterOf${name}.on<${JSON.stringify(event)}>>[1]>>` : "";
-					return `\t\t${memberName(event)}: (handle: ${name}) => Effectify.events${args}(handle.upstream, ${JSON.stringify(event)}),`;
+					const args = typed
+						? `<Parameters<Parameters<typeof emitterOf${name}.on<${JSON.stringify(event)}>>[1]>>`
+						: "";
+					return `\t\t${ownKey(event)}: (handle: ${name}, options?: Effectify.EventOptions) => Effectify.events${args}(handle.upstream, ${JSON.stringify(event)}, ${JSON.stringify(`${name}.events.${event}`)}, options),`;
 				}),
 				"\t},",
 			);
@@ -234,22 +328,202 @@ function indexSource(surface: Surface, recipe: Recipe): string {
 }
 
 /**
+ * Which of upstream's values a runtime facade re-exports by name. The candidates are the recipe's `passthrough` (else
+ * the engine's, `passthroughCandidates`) less the names the facade declares and those Node cannot import by name
+ * (`erased`), which would fail the facade as it loads, whatever the recipe says. Only a surface whose `study` imported
+ * the package (`runtime: "imported"`) says which those are, and its facade re-exports them (`reexported`). From one
+ * studied before engine 0.4.0 the facade re-exports none, as 0.3.0's did, and `withheld` are those `study` would let
+ * it re-export (`unprobed`); from one Node could not import, none either (`unimportable`).
+ */
+export type ValueExports =
+	| { readonly kind: "reexported"; readonly names: ReadonlyArray<string> }
+	| { readonly kind: "unprobed"; readonly withheld: ReadonlyArray<string> }
+	| { readonly kind: "unimportable" };
+
+/** Which of upstream's values the facade of `surface` and `recipe` re-exports by name (see `ValueExports`). */
+export function valueExports(surface: Surface, recipe: Recipe): ValueExports {
+	if (surface.runtime === "unimportable") return { kind: "unimportable" };
+	const declared = declaredNames(surface, recipe);
+	const erased = new Set(surface.exports.flatMap((item) => (item.erased === undefined ? [] : [item.name])));
+	const names = (recipe.passthrough ?? passthroughCandidates(surface, recipe.exports)).filter(
+		(name) => !declared.has(name) && !erased.has(name),
+	);
+	return surface.runtime === "imported" ? { kind: "reexported", names } : { kind: "unprobed", withheld: names };
+}
+
+/**
+ * The facade's errors: one branded `Schema.TaggedError` per recipe error, carrying upstream's fields; a `reason`
+ * tagged union of the codes an error names, so a caller picks one with `Effect.catchReason`; `Failure`, the Schema
+ * of every error with `.match` and `.guards`; and `classify`, which maps an upstream failure to its error.
+ */
+function errorsSource(surface: Surface, recipe: Recipe): ReadonlyArray<string> {
+	const lines: Array<string> = [];
+	const catchAll = recipe.errors.at(-1);
+	for (const error of recipe.errors) {
+		const reasons = reasonCases(error, error === catchAll);
+		const fields = carriedFields(surface, error, reasons.length > 0);
+		if (reasons.length > 0) {
+			const other = reasons.at(-1) !== error.codes.at(-1);
+			lines.push(
+				`/** Why ${recipe.package} failed with \`${error.tag}\`, by upstream's error code: one case per code${other ? `, \`${reasons.at(-1)}\` for any other` : ""}. Pick one with \`Effect.catchReason(${JSON.stringify(error.tag)}, "<code>", ...)\`. */`,
+				`export const ${error.tag}Reason = Schema.TaggedUnion({ ${reasons.map((reason) => `${ownKey(reason)}: {}`).join(", ")} });`,
+				`/** The upstream codes that are cases of \`${error.tag}Reason\`. */`,
+				`const ${error.tag}Codes = [${error.codes.map((code) => JSON.stringify(code)).join(", ")}] as const;`,
+				"",
+			);
+		}
+		const carries =
+			fields.length === 0 ? "" : `, whose ${fields.map((field) => `\`${field.upstream}\``).join(", ")} it carries`;
+		const doc =
+			error.instanceOf !== undefined
+				? `${recipe.package} failed with its \`${error.instanceOf}\`${carries}.`
+				: error === catchAll
+					? `Any other failure of ${recipe.package}; \`code\` carries upstream's error code when it has one${reasons.length > 0 ? `, \`reason\` the same as a case` : ""}.`
+					: `${recipe.package} failed with code ${error.codes.map((code) => `\`${code}\``).join(", ")}.`;
+		const members = [
+			...fields.map((field) => `${ownKey(field.name)}: ${field.schema}`),
+			...(reasons.length > 0 ? [`reason: ${error.tag}Reason`] : []),
+		];
+		const schema =
+			members.length === 0 ? "Effectify.errorFields" : `{ ...Effectify.errorFields, ${members.join(", ")} }`;
+		lines.push(
+			`/** ${doc} */`,
+			`export class ${error.tag} extends Schema.TaggedError<${error.tag}, { readonly brand: unique symbol }>()(${JSON.stringify(error.tag)}, ${schema}) {}`,
+			"",
+		);
+	}
+	const tags = recipe.errors.map((error) => error.tag);
+	lines.push(
+		"/** Every failure of the facade as a Schema: `Failure.match(error, { <Tag>: ... })`, `Failure.guards.<Tag>(value)`, `Failure.isAnyOf([...])`. */",
+		`export const Failure = Schema.Union([${tags.join(", ")}]).pipe(Schema.toTaggedUnion("_tag"));`,
+		"/** Every failure of the facade. */",
+		"export type Failure = typeof Failure.Type;",
+		"",
+		"const classify: Effectify.Classify<Failure> = (operation, cause, secrets) => {",
+		"\tconst fields = Effectify.describe(operation, cause, secrets);",
+	);
+	for (const error of recipe.errors.slice(0, -1)) {
+		const reasons = reasonCases(error, false);
+		// `instanceof` narrows `cause` to upstream's class: each field it carries is read from upstream's own object.
+		const copies = carriedFields(surface, error, reasons.length > 0).map(
+			(field) => `${ownKey(field.name)}: ${carriedValue(field, `cause${propertyAccess(field.upstream)}`)}`,
+		);
+		if (error.instanceOf !== undefined) {
+			const reason =
+				reasons.length === 0
+					? []
+					: [
+							`reason: { _tag: Effectify.codeIn(${error.tag}Codes, fields.code) ?? ${JSON.stringify(reasons.at(-1))} }`,
+						];
+			const values = [...copies, ...reason];
+			lines.push(
+				`\tif (cause instanceof Upstream${propertyAccess(error.instanceOf)}) return ${error.tag}.make(${values.length === 0 ? "fields" : `{ ...fields, ${values.join(", ")} }`}, Effectify.unchecked);`,
+			);
+		}
+		if (error.codes.length > 0) {
+			const code = `${lowerFirst(error.tag)}Code`;
+			lines.push(
+				`\tconst ${code} = Effectify.codeIn(${error.tag}Codes, fields.code);`,
+				`\tif (${code} !== undefined) return ${error.tag}.make({ ...fields, reason: { _tag: ${code} } }, Effectify.unchecked);`,
+			);
+		}
+	}
+	const last = catchAll ?? { tag: `${recipe.prefix}Error`, codes: [] };
+	const lastReasons = reasonCases(last, true);
+	const lastValues =
+		lastReasons.length === 0
+			? "fields"
+			: `{ ...fields, reason: { _tag: Effectify.codeIn(${last.tag}Codes, fields.code) ?? ${JSON.stringify(lastReasons.at(-1))} } }`;
+	lines.push(`\treturn ${last.tag}.make(${lastValues}, Effectify.unchecked);`, "};", "");
+	return lines;
+}
+
+/**
+ * The cases of an error's `reason`: each code it names, and a case for any other code when the error is also chosen
+ * without one (the catch-all, or an upstream class), named by `fallbackReason`.
+ */
+function reasonCases(error: Recipe["errors"][number], catchAll: boolean): ReadonlyArray<string> {
+	if (error.codes.length === 0) return [];
+	const reachedOtherwise = catchAll || error.instanceOf !== undefined;
+	return reachedOtherwise ? [...error.codes, fallbackReason(error.codes)] : error.codes;
+}
+
+/**
+ * The name of the case for a code an error does not list: the first of `Other`, `Unlisted`, `Unlisted2`, `Unlisted3`,
+ * ... that is none of its upstream codes, so no case is named twice.
+ */
+function fallbackReason(codes: ReadonlyArray<string>): string {
+	if (!codes.includes("Other")) return "Other";
+	for (let index = 1; ; index++) {
+		const name = index === 1 ? "Unlisted" : `Unlisted${index}`;
+		if (!codes.includes(name)) return name;
+	}
+}
+
+/** The upstream fields an error carries: those of its class, none for the catch-all. */
+function carriedFields(
+	surface: Surface,
+	error: Recipe["errors"][number],
+	hasReason: boolean,
+): ReadonlyArray<CarriedField> {
+	return error.instanceOf === undefined
+		? []
+		: upstreamFields(surface, error.instanceOf, error.codes.length > 0, hasReason);
+}
+
+/**
  * The names the facade exports of its own: its errors, handles, offered exports (a class as `make<Class>`, its
  * statics under its name), services and events. Upstream's values of these names are not re-exported.
  */
 function declaredNames(surface: Surface, recipe: Recipe): ReadonlySet<string> {
-	const offered = surface.exports
-		.filter((item) => recipe.exports.includes(item.name))
-		.flatMap((item) => (item.kind === "class" ? [`make${item.name}`, item.name] : [item.name === "default" ? lowerFirst(recipe.prefix) : item.name]));
+	const offered = wrappedExports(surface, recipe).flatMap((item) =>
+		item.kind === "class"
+			? [`make${item.name}`, item.name]
+			: [item.name === "default" ? lowerFirst(recipe.prefix) : item.name],
+	);
 	return new Set([
 		"Upstream",
 		"Failure",
 		"events",
-		...recipe.errors.map((error) => error.tag),
+		...recipe.errors.flatMap((error) => (error.codes.length === 0 ? [error.tag] : [error.tag, `${error.tag}Reason`])),
 		...Object.keys(recipe.handles),
 		...recipe.services.map((service) => service.name),
+		...brandNames(recipe),
 		...offered,
 	]);
+}
+
+/** The wrapped handle a property of `handle` holds, if any: its facade is read through, not upstream's value. */
+function heldHandle(handle: Handle, property: string, recipe: Recipe): string | undefined {
+	const held = handle.properties[property]?.handle;
+	return held !== undefined && recipe.handles[held] !== undefined ? held : undefined;
+}
+
+/**
+ * The members of handle `name` whose value the runtime wraps, as its spec says (`returns`, `choices`, `lists`, a
+ * property holding a handle): the facade's types lift a handle in no other member's value (`Effectified`'s `G`), so
+ * where the spec gives a value as it is (an inline `Base | Derived`, a conditional such as ts-morph's
+ * `KindToNodeMappings[TKind]`), the type is upstream's as declared, and the two cannot disagree that way.
+ */
+function facadeMembers(name: string, handle: Handle, recipe: Recipe): ReadonlyArray<string> {
+	return [
+		...new Set([
+			...returnedHandles(name, handle.methods, recipe).map(([method]) => method),
+			...chosenHandles(name, handle.methods, recipe).map(([method]) => method),
+			...listedHandles(name, handle, recipe).map(([member]) => member),
+			...wrappedProperties(name, handle, recipe).filter(
+				(property) => heldHandle(handle, property, recipe) !== undefined,
+			),
+		]),
+	].sort();
+}
+
+/**
+ * Whether the facade's handles show the recipe's secrets as `Redacted` in the properties they read through and what
+ * their methods return: the recipe names a secret inside an argument, which upstream may keep and hand back.
+ */
+function conceals(recipe: Recipe): boolean {
+	return concealedPaths(recipe).length > 0;
 }
 
 /**
@@ -263,13 +537,198 @@ function keyedListeners(handle: Handle | undefined): boolean {
 	});
 }
 
+/** The defaults of `Effectified`'s type arguments past the optional methods: rewrites, lookups, concealed paths. */
+const TRAILING_DEFAULTS = ["{}", "never", "never"];
+
 /**
  * A handle's facade interface. Its methods are derived from upstream's types, except generic ones: inference through
  * a mapped type cannot keep type parameters, so each is written out from upstream's own declaration (qualified with
- * `Upstream.`, its trailing callback left out), unless the recipe keeps it derived.
+ * `Upstream.`, its trailing callback left out), unless the recipe keeps it derived. A property the recipe brands is
+ * `Effectify.Branded`, a derived method whose value carries brands `Effectify.ResolvingBranded`.
  */
-function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<string>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
-	const derived = `Effectify.Effectified<${handle.typeRef}, Failure, Handles, ${name}Methods, ${name}Properties, ${name}Callbacks>`;
+function facadeInterface(
+	name: string,
+	handle: Handle,
+	methods: ReadonlyArray<string>,
+	surface: Surface,
+	recipe: Recipe,
+): ReadonlyArray<string> {
+	const options = optionMethods(name, handle.methods, recipe);
+	const asyncMethods = classified(name, handle.methods, recipe, "async");
+	const borrowed = borrowedMethods(name, handle, recipe);
+	const lists = listedHandles(name, handle, recipe).map(([member]) => member);
+	const wraps = facadeMembers(name, handle, recipe);
+	const rewrites = methods.flatMap((method) => {
+		const found = parameterRewrites(recipe, `${name}.${method}`);
+		return found.length === 0 ? [] : [`readonly ${memberName(method)}: ${rewritesType(found)}`];
+	});
+	// The type arguments past the optional methods, each left out with those after it while it is the default.
+	const trailing = [
+		rewrites.length === 0 ? "{}" : `{ ${rewrites.join("; ")} }`,
+		borrowed.length === 0 ? "never" : `${name}Borrowed`,
+		conceals(recipe) ? "Concealed" : "never",
+	];
+	while (trailing.length > 0 && trailing.at(-1) === TRAILING_DEFAULTS[trailing.length - 1]) trailing.pop();
+	const derived = `Effectify.Effectified<${handle.typeRef}, Failure, Handles, ${name}Methods, ${name}Properties, ${name}Callbacks, ${name}Optional, ${name}Facades${trailing.map((argument) => `, ${argument}`).join("")}>`;
+	const { explicit, lifted } = writtenMethods(name, handle, methods, recipe);
+	const branded = wrappedProperties(name, handle, recipe).flatMap((property) => {
+		const brand = propertyBrand(recipe, name, property);
+		return brand === undefined ? [] : [{ property, brand }];
+	});
+	// A result brand on a written-out method is refused by `rewriteChecks`: its type parameters would be lost.
+	const resolving = methods.flatMap((method) => {
+		const found = resultRewrites(recipe, `${name}.${method}`);
+		return found.length === 0 || explicit.includes(method) || lifted.includes(method) ? [] : [{ method, found }];
+	});
+	const omitted = [
+		...explicit,
+		...lifted,
+		...branded.map((entry) => entry.property),
+		...resolving.map((entry) => entry.method),
+	];
+	if (omitted.length === 0) return [`export interface ${name} extends ${derived} {}`];
+	const qualify = qualifier(surface);
+	const accept = accepting(surface, recipe);
+	return [
+		...(lifted.length === 0
+			? []
+			: [
+					`/** Types only: a ${name} whose generic methods the \`lifted${name}_*\` below type; none is read at run time. */`,
+					`declare const instanceOf${name}: ${handle.typeRef};`,
+					// One declaration per method, its line marked: a type of one that its declaration cannot name (a type
+					// upstream does not export) fails that line alone, and `reconcile` keeps that method derived.
+					...lifted.map(
+						(method) =>
+							`const ${liftedName(name, method)} = () => Effectify.lifted<${liftedArguments(method, options, borrowed, wraps, recipe)}>()(instanceOf${name}${propertyAccess(method)}); // lifted: ${name}.${method}`,
+					),
+					"",
+				]),
+		`export interface ${name} extends Omit<${derived}, ${omitted.map((member) => JSON.stringify(member)).join(" | ")}> {`,
+		...explicit.flatMap((method) =>
+			facadeSignatures(handle.methods[method] ?? [], asyncMethods.includes(method)).map(
+				(signature) =>
+					`\t${memberName(method)}${explicitSignature(name, signature, qualify, accept, { mode: "method", option: options.includes(method), rewrites: parameterRewrites(recipe, `${name}.${method}`), borrowed: borrowed.includes(method), concealed: conceals(recipe), listed: lists.includes(method) && listedHandle(signature.resolves ?? signature.returns, recipe.handles, signature.handles) !== undefined, effect: asyncMethods.includes(method), wraps: wraps.includes(method) })}; // explicit: ${name}.${method}`,
+			),
+		),
+		...lifted.map(
+			(method) =>
+				`\treadonly ${memberName(method)}: ReturnType<typeof ${liftedName(name, method)}>; // lifted: ${name}.${method}`,
+		),
+		...branded.map(
+			(entry) =>
+				`\treadonly ${memberName(entry.property)}: Effectify.Branded<${handle.typeRef}[${JSON.stringify(entry.property)}], ${entry.brand}>; // brand: ${name}.${entry.property}`,
+		),
+		...resolving.map(
+			(entry) =>
+				`\treadonly ${memberName(entry.method)}: Effectify.ResolvingBranded<${derived}[${JSON.stringify(entry.method)}], ${rewritesType(entry.found)}>; // brand: ${name}.${entry.method}()`,
+		),
+		"}",
+	];
+}
+
+/**
+ * The type arguments of `Effectify.lifted` (and `Effectify.LiftedResult`) for lifted method `method`: the handles it
+ * gives borrowed or not, whether its value is an `Option`, the concealed paths, and, when its value is upstream's as
+ * it is (no member of `wraps`), `false`.
+ */
+function liftedArguments(
+	method: string,
+	options: ReadonlyArray<string>,
+	borrowed: ReadonlyArray<string>,
+	wraps: ReadonlyArray<string>,
+	recipe: Recipe,
+): string {
+	const handles = borrowed.includes(method) ? "Effectify.Borrowed<Handles>" : "Handles";
+	const option = options.includes(method);
+	const concealed = conceals(recipe) ? "Concealed" : "never";
+	const rest = !wraps.includes(method)
+		? `, ${option}, ${concealed}, false`
+		: conceals(recipe)
+			? `, ${option}, Concealed`
+			: option
+				? ", true"
+				: "";
+	return `Failure, ${handles}${rest}`;
+}
+
+/**
+ * The check that every member of every handle gives what its spec makes it give at run time (`Effectify.Disagreeing`):
+ * raw, a facade owned or borrowed, a list, an `Option`, a `Stream`. Each overload of a method with several is read. A
+ * generic method typed through a call (`lifted`) is read as `Effectify.LiftedResult`, the result it is lifted with at
+ * its type parameters' constraints: its own type, a generic rest parameter mapped through `Accepting`, leaves the
+ * checker undecided.
+ */
+function givesChecks(surface: Surface, recipe: Recipe, wrapped: ReadonlyArray<string>): ReadonlyArray<string> {
+	const checks = wrapped.flatMap((name) => {
+		const handle = surface.handles[name];
+		if (handle === undefined) return [];
+		const methods = wrappedMethods(name, handle.methods, recipe);
+		const { lifted } = writtenMethods(name, handle, methods, recipe);
+		const options = optionMethods(name, handle.methods, recipe);
+		const borrowed = borrowedMethods(name, handle, recipe);
+		const wraps = facadeMembers(name, handle, recipe);
+		const asyncMethods = classified(name, handle.methods, recipe, "async");
+		const overloaded = methods.filter(
+			(method) =>
+				!lifted.includes(method) &&
+				facadeSignatures(handle.methods[method] ?? [], asyncMethods.includes(method)).length > 1,
+		);
+		const members =
+			lifted.length === 0
+				? `${name}Methods | ${name}Properties`
+				: `Exclude<${name}Methods, ${unionOf(lifted)}> | ${name}Properties`;
+		const spec = `typeof kinds.${name}.spec`;
+		return [
+			`\tEffectify.ExpectNone<Effectify.Disagreeing<${name}, ${members}, ${spec}, Handles${overloaded.length === 0 ? "" : `, ${unionOf(overloaded)}`}>>, // gives: ${name}`,
+			...(lifted.length === 0
+				? []
+				: [
+						`\tEffectify.ExpectNone<Effectify.Disagreeing<{ ${lifted.map((method) => `readonly ${memberName(method)}: Effectify.LiftedResult<typeof instanceOf${name}${propertyAccess(method)}, ${liftedArguments(method, options, borrowed, wraps, recipe)}>`).join("; ")} }, ${unionOf(lifted)}, ${spec}, Handles>>, // gives: ${name}, lifted`,
+					]),
+		];
+	});
+	if (checks.length === 0) return [];
+	return [
+		"/** What every member of every handle gives (raw, a facade owned or borrowed, a list, an `Option`, a `Stream`) agrees between its type and its spec: a member whose type says otherwise than the runtime does fails to compile here, by name. */",
+		"type CheckedGives = [",
+		...checks,
+		"];",
+		"",
+	];
+}
+
+/**
+ * The signatures of a method its facade type keeps (the runtime's `MethodSignature`): none reporting through a trailing
+ * callback, nor, of a method run as an Effect (`effect`), one taking a trailing callback that returns no promise, its
+ * promise overload's twin (sharp's `toBuffer(callback): Sharp`).
+ */
+function facadeSignatures(signatures: ReadonlyArray<Signature>, effect: boolean): ReadonlyArray<Signature> {
+	return signatures.filter(
+		(signature) =>
+			!signature.traits.includes("callback") &&
+			!(effect && signature.trailingCallback && !signature.traits.includes("async")),
+	);
+}
+
+/**
+ * The handles of a choice (`chosenHandles`), the one with the most wrapped methods first: the runtime wraps a value as
+ * the first whose methods it has, so the narrowest it is (an `ElementHandle` before the `JSHandle` it extends).
+ */
+function narrowestFirst(handles: ReadonlyArray<string>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
+	const count = (name: string) => wrappedMethods(name, surface.handles[name]?.methods ?? {}, recipe).length;
+	return [...handles].sort((a, b) => count(b) - count(a) || a.localeCompare(b));
+}
+
+/**
+ * The methods of a handle typed by their own written-out signatures: `explicit` (generic, written from upstream's
+ * declaration) and `lifted` (generic, kept derived, typed through a call).
+ */
+function writtenMethods(
+	name: string,
+	handle: Handle,
+	methods: ReadonlyArray<string>,
+	recipe: Recipe,
+): { readonly explicit: ReadonlyArray<string>; readonly lifted: ReadonlyArray<string> } {
 	// A generic method kept derived (its written-out signature names types upstream does not export) with one
 	// signature is lifted: typed through a call, which keeps its type parameters. Overloads would keep only the last.
 	const lifted = methods.filter((method) => {
@@ -293,36 +752,59 @@ function facadeInterface(name: string, handle: Handle, methods: ReadonlyArray<st
 			signatures.some((signature) => !signature.traits.includes("callback"))
 		);
 	});
-	if (explicit.length === 0 && lifted.length === 0) return [`export interface ${name} extends ${derived} {}`];
-	const qualify = qualifier(surface);
-	const accept = accepting(surface, recipe);
-	return [
-		...(lifted.length === 0
-			? []
-			: [
-					`/** Types only: a ${name} whose generic methods the \`lifted${name}_*\` below type; none is read at run time. */`,
-					`declare const instanceOf${name}: ${handle.typeRef};`,
-					// One declaration per method, its line marked: a type of one that its declaration cannot name (a type
-					// upstream does not export) fails that line alone, and `reconcile` keeps that method derived.
-					...lifted.map(
-						(method) => `const ${liftedName(name, method)} = () => Effectify.lifted<Failure, Handles>()(instanceOf${name}${propertyAccess(method)}); // lifted: ${name}.${method}`,
-					),
-					"",
-				]),
-		`export interface ${name} extends Omit<${derived}, ${[...explicit, ...lifted].map((method) => JSON.stringify(method)).join(" | ")}> {`,
-		...explicit.flatMap((method) =>
-			(handle.methods[method] ?? [])
-				.filter((signature) => !signature.traits.includes("callback"))
-				.map((signature) => `\t${memberName(method)}${explicitSignature(name, signature, qualify, accept, "method")}; // explicit: ${name}.${method}`),
-		),
-		...lifted.map((method) => `\treadonly ${memberName(method)}: ReturnType<typeof ${liftedName(name, method)}>; // lifted: ${name}.${method}`),
-		"}",
-	];
+	return { explicit, lifted };
+}
+
+/** Every call typed by its written-out overloads: generic methods (explicit or lifted), and generic exports and statics. */
+function writtenCalls(surface: Surface, recipe: Recipe, wrapped: ReadonlyArray<string>): ReadonlySet<string> {
+	const methods = wrapped.flatMap((name) => {
+		const handle = surface.handles[name];
+		if (handle === undefined) return [];
+		const { explicit, lifted } = writtenMethods(name, handle, wrappedMethods(name, handle.methods, recipe), recipe);
+		return [...explicit, ...lifted].map((method) => `${name}.${method}`);
+	});
+	const exports = wrappedExports(surface, recipe).flatMap((item) => {
+		if (item.kind === "function")
+			return isExplicit(
+				item.name,
+				item.signatures.filter((signature) => !signature.traits.includes("callback")),
+				recipe,
+			)
+				? [item.name]
+				: [];
+		if (item.kind !== "class") return [];
+		const statics = Object.entries(item.statics ?? {})
+			.filter(([name, signatures]) => isExplicit(`${item.name}.${name}`, signatures, recipe))
+			.map(([name]) => `${item.name}.${name}`);
+		return isExplicit(item.name, item.constructors, recipe) ? [item.name, ...statics] : statics;
+	});
+	return new Set([...methods, ...exports]);
 }
 
 /** The declaration that types one lifted method: `liftedPage_waitForFunction`. */
 function liftedName(handle: string, method: string): string {
 	return `lifted${handle}_${method.replace(/[^\w$]/g, "_")}`;
+}
+
+/**
+ * How a written-out signature is used: a handle's method or an export, whether its value may be absent (an
+ * `Option`), the rewrites its parameters take (secrets, brands; each path `[<index>, ...properties]`), whether its
+ * handle is borrowed (a lookup or a synchronous call: no `Scope`, no release), whether a method's result shows the
+ * secrets upstream kept as `Redacted` (`Concealed`), and whether this signature of a method gives an array of handles
+ * (an async one `Effectify.ResolvedList`: their facades, the caller's unless borrowed; a synchronous one
+ * `Effectify.Listed`: their borrowed facades).
+ */
+interface SignatureUse {
+	readonly mode: "method" | "export";
+	readonly option: boolean;
+	readonly rewrites: ReadonlyArray<Rewrite>;
+	readonly borrowed?: boolean;
+	readonly concealed?: boolean;
+	readonly listed?: boolean;
+	/** Whether the method runs as an Effect (an overload returns a promise): each signature is then written as one. */
+	readonly effect?: boolean;
+	/** Whether the runtime wraps a method's value (`facadeMembers`): when not, its result is upstream's type as it is. */
+	readonly wraps?: boolean;
 }
 
 /** One upstream signature in facade form, written out: `<T = Upstream.X>(params): Effect...`. */
@@ -331,23 +813,50 @@ function explicitSignature(
 	signature: Signature,
 	qualify: (type: string, local: ReadonlyArray<string>) => string,
 	accept: (type: string) => string,
-	mode: "method" | "export",
+	use: SignatureUse,
 ): string {
 	const local = typeParameterNames(signature.typeParameters);
-	const parameters = signature.trailingCallback && signature.parameters.at(-1)?.optional ? signature.parameters.slice(0, -1) : signature.parameters;
+	const parameters =
+		signature.trailingCallback && signature.parameters.at(-1)?.optional
+			? signature.parameters.slice(0, -1)
+			: signature.parameters;
 	const list = parameters
-		.map((parameter) => `${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional && !parameter.rest ? "?" : ""}: ${accept(qualify(parameter.type, local))}`)
+		.map((parameter, index) => {
+			const type = accept(qualify(parameter.type, local));
+			const own = use.rewrites
+				.filter((rewrite) => rewrite.path[0] === String(index))
+				.map((rewrite) => ({ ...rewrite, path: rewrite.path.slice(1) }));
+			return `${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional && !parameter.rest ? "?" : ""}: ${own.length === 0 ? type : `Effectify.Rewritten<${type}, ${rewritesType(own)}>`}`;
+		})
 		.join(", ");
-	const result = signature.traits.includes("async")
-		? `Effectify.Resolved<${qualify(signature.resolves ?? "unknown", local)}, Failure, Handles>`
-		: mode === "export" && signature.traits.includes("stream")
-			? `Effectify.Streamed<${qualify(signature.returns, local)}, Failure>`
-			: mode === "export"
-			? `Effectify.Resolved<${qualify(signature.returns, local)}, Failure, Handles>`
-			: signature.traits.includes("returns-this")
-				? handle
-				: `Effectify.Lift<${qualify(signature.returns, local)}, Handles>`;
+	const resolved = use.option ? "Effectify.ResolvedOption" : "Effectify.Resolved";
+	const handles = use.wraps === false ? "never" : use.borrowed === true ? "Effectify.Borrowed<Handles>" : "Handles";
+	const concealed = use.concealed === true ? ", Concealed" : "";
+	// A synchronous overload of a method the runtime runs as an Effect resolves to what it returns.
+	const effect = signature.traits.includes("async") || use.effect === true;
+	const resolves = qualify(signature.resolves ?? signature.returns, local);
+	const result =
+		use.listed === true
+			? effect
+				? `Effectify.ResolvedList<${resolves}, Failure, ${handles}>`
+				: `Effectify.Listed<${qualify(signature.returns, local)}, ${handles}>`
+			: effect
+				? `${resolved}<${resolves}, Failure, ${handles}${concealed}>`
+				: use.mode === "export" && signature.traits.includes("stream")
+					? `Effectify.Streamed<${qualify(signature.returns, local)}, Failure>`
+					: use.mode === "export"
+						? `${resolved}<${qualify(signature.returns, local)}, Failure, Handles>`
+						: signature.traits.includes("returns-this") && use.wraps !== false
+							? handle
+							: use.concealed === true
+								? `Effectify.Shown<${qualify(signature.returns, local)}, ${handles}, Concealed>`
+								: `Effectify.Lift<${qualify(signature.returns, local)}, ${handles}>`;
 	return `${signature.typeParameters === undefined ? "" : `<${qualify(signature.typeParameters, local)}>`}(${list}): ${result}`;
+}
+
+/** Whether the recipe runs call `key` without a span. */
+function isUntraced(recipe: Recipe, key: string): boolean {
+	return (recipe.untraced ?? []).includes(key);
 }
 
 /**
@@ -363,14 +872,28 @@ function accepting(surface: Surface, recipe: Recipe): (type: string) => string {
 	return (type) => (pattern.test(type) ? `Effectify.Accepts<${type}, Handles>` : type);
 }
 
-/** Qualifies the names a type text takes from upstream's exports with `Upstream.`; a type parameter shadows them. */
+/**
+ * Qualifies the names a type text takes from upstream's exports with `Upstream.`; a type parameter shadows them, and
+ * so does a property's key (`{ Base: string }`, `{ Base?: string }`), but a conditional's branch (`? Base : Other`) is a
+ * type. A type text names no export by a string, which is no name in it.
+ */
 function qualifier(surface: Surface): (type: string, local: ReadonlyArray<string>) => string {
-	const exported = [...new Set([...surface.typeExports, ...surface.exports.filter((item) => item.kind === "class").map((item) => item.name)])];
+	const exported = [
+		...new Set([
+			...surface.typeExports,
+			...surface.exports.filter((item) => item.kind === "class").map((item) => item.name),
+		]),
+	].filter(isIdentifierName);
 	return (type, local) => {
 		const names = exported.filter((name) => !local.includes(name)).sort((a, b) => b.length - a.length);
 		if (names.length === 0) return type;
-		const pattern = new RegExp(String.raw`(?<![.\w$'"])\b(${names.map(escape).join("|")})\b(?![\w$]|\s*\??:)`, "g");
-		return type.replace(pattern, "Upstream.$1");
+		const pattern = new RegExp(
+			String.raw`(?<![.\w$'"])(?<branch>\?\s*)?\b(${names.map(escape).join("|")})\b(?![\w$])(?<key>\s*\??:)?`,
+			"g",
+		);
+		return type.replace(pattern, (whole: string, branch: string | undefined, name: string, key: string | undefined) =>
+			key !== undefined && branch === undefined ? whole : `${branch ?? ""}Upstream.${name}${key ?? ""}`,
+		);
 	};
 }
 
@@ -395,11 +918,25 @@ function typeParameterNames(list: string | undefined): ReadonlyArray<string> {
 
 /** `.name`, or `["na-me"]` for a name that is no identifier. */
 function propertyAccess(name: string): string {
-	return /^[A-Za-z_$][\w$]*$/.test(name) ? `.${name}` : `[${JSON.stringify(name)}]`;
+	return isIdentifierName(name) ? `.${name}` : `[${JSON.stringify(name)}]`;
 }
 
-function memberName(method: string): string {
-	return /^[A-Za-z_$][\w$]*$/.test(method) ? method : JSON.stringify(method);
+/** A name as a type's member or an export's specifier: bare, or its string for one that is no identifier. */
+function memberName(name: string): string {
+	return isIdentifierName(name) ? name : JSON.stringify(name);
+}
+
+/**
+ * `name` as a key of an object literal made at run time, written as `written` (bare or quoted). `__proto__`, bare or
+ * quoted, sets the object's prototype there instead of making a property, so it is computed: `["__proto__"]`.
+ */
+function ownKey(name: string, written = memberName(name)): string {
+	return name === "__proto__" ? `[${JSON.stringify(name)}]` : written;
+}
+
+/** `name` as a quoted key of an object literal made at run time, as a spec's records are (`"connect": true`). */
+function quotedKey(name: string): string {
+	return ownKey(name, JSON.stringify(name));
 }
 
 function escape(name: string): string {
@@ -415,32 +952,40 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 	const qualify = qualifier(surface);
 	const accept = accepting(surface, recipe);
 	if (item.kind === "function") {
-		const into = producedHandle(item.signatures, recipe);
-		const kind = into === undefined ? "undefined" : `kinds.${into}`;
-		const doc = `/** \`${recipe.package}.${item.name}\` in facade form: every call is an Effect${into === undefined ? "" : ` of a ${into}`}. */`;
 		const kept = item.signatures.filter((signature) => !signature.traits.includes("callback"));
-		const options = entryOptions(kept);
+		const use = callUse(item.name, kept, recipe);
+		const into = producedHandle(kept, recipe) ?? (use.option ? presentHandleOf(kept, recipe) : undefined);
+		const kind = into === undefined ? "undefined" : `kinds.${into}`;
+		const doc = `/** \`${recipe.package}.${item.name}\` in facade form: every call is a traced Effect${into === undefined ? "" : ` of a ${into}`}${use.option ? ", absent as `Option.none()`" : ""}. */`;
+		const options = entryOptions(kept, use);
 		if (isExplicit(item.name, kept, recipe)) {
 			return [
 				doc,
 				`export const ${facadeName} = Effectify.entryAs<{`,
-				...kept.map((signature) => `\t${explicitSignature(facadeName, signature, qualify, accept, "export")}; // explicit: ${item.name}`),
+				...kept.map(
+					(signature) =>
+						`\t${explicitSignature(facadeName, signature, qualify, accept, { ...use, mode: "export" })}; // explicit: ${item.name}`,
+				),
 				`}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
 			];
 		}
 		// Annotated, so its declaration names `typeof Upstream.<name>`, not the types its signature expands to, which
 		// upstream may not export.
-		const type = `${instantiated(item.name, kept, surface)}, Failure, Handles`;
-		return [
-			doc,
-			`export const ${facadeName}: Effectify.EffectFunction<${type}> = Effectify.entry<${type}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options});`,
-		];
+		const type = `${instantiated(item.name, kept, surface)}, Failure, Handles${functionArguments(use)}`;
+		const value = `Effectify.entry<${type}>(Upstream.${item.name}, ${JSON.stringify(item.name)}, ${kind}, kinds, classify${options})`;
+		if (use.results.length === 0)
+			return [doc, `export const ${facadeName}: Effectify.EffectFunction<${type}> = ${value};`];
+		// Brands are types only: the value upstream resolves to is the branded one.
+		const resolving = `Effectify.ResolvingBranded<Effectify.EffectFunction<${type}>, ${rewritesType(use.results)}>`;
+		return [doc, `export const ${facadeName}: ${resolving} = ${value} as ${resolving};`];
 	}
 	if (item.kind === "class" && recipe.handles[item.handle] !== undefined) {
 		const handle = surface.handles[item.handle];
-		const doc = `/** Constructs a ${recipe.package} \`${item.name}\` as an Effect of its facade${recipe.handles[item.handle]?.release === undefined ? "" : ", released when the scope closes"}. */`;
+		const doc = `/** Constructs a ${recipe.package} \`${item.name}\` as a traced Effect of its facade${recipe.handles[item.handle]?.release === undefined ? "" : ", released when the scope closes"}. */`;
 		const operation = JSON.stringify(`new ${item.name}`);
-		const options = entryOptions(item.constructors);
+		// A constructor never makes nothing: its instance is no `Option`.
+		const use = { ...callUse(item.name, item.constructors, recipe), option: false };
+		const options = entryOptions(item.constructors, use);
 		const statics = staticsSource(item, surface, recipe);
 		if (handle !== undefined && isExplicit(item.name, item.constructors, recipe)) {
 			const instance = { resolves: handle.typeRef, traits: ["async" as const] };
@@ -448,14 +993,15 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 				doc,
 				`export const make${item.name} = Effectify.constructAs<{`,
 				...item.constructors.map(
-					(signature) => `\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, accept, "export")}; // explicit: ${item.name}`,
+					(signature) =>
+						`\t${explicitSignature(item.name, { ...signature, ...instance }, qualify, accept, { ...use, mode: "export" })}; // explicit: ${item.name}`,
 				),
 				`}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
 				...(statics.length === 0 ? [] : ["", ...statics]),
 			];
 		}
 		if (item.constructors.length === 0) return statics;
-		const type = `${instantiated(item.name, item.constructors, surface)}, Failure, Handles`;
+		const type = `${instantiated(item.name, item.constructors, surface)}, Failure, Handles${use.rewrites.length === 0 ? "" : `, ${rewritesType(use.rewrites)}`}`;
 		return [
 			doc,
 			`export const make${item.name}: Effectify.Construct<${type}> = Effectify.construct<${type}>(Upstream.${item.name}, ${operation}, kinds.${item.handle}, kinds, classify${options});`,
@@ -466,15 +1012,64 @@ function exportSource(item: Export, surface: Surface, recipe: Recipe): ReadonlyA
 }
 
 /**
+ * How the facade runs one exported call: whether its value may be absent, the rewrites its parameters take
+ * (secrets, brands), the brands of its value, its secrets for the runtime, and whether it is traced.
+ */
+interface CallUse {
+	readonly option: boolean;
+	readonly rewrites: ReadonlyArray<Rewrite>;
+	readonly results: ReadonlyArray<Rewrite>;
+	readonly secrets: ReadonlyArray<ReadonlyArray<string>>;
+	readonly untraced: boolean;
+}
+
+/** The recipe's and the types' decisions for exported call `key` with the signatures the facade keeps. */
+function callUse(key: string, kept: ReadonlyArray<Signature>, recipe: Recipe): CallUse {
+	return {
+		option: isOptional(kept),
+		rewrites: parameterRewrites(recipe, key),
+		results: resultRewrites(recipe, key),
+		secrets: secretPaths(recipe, key),
+		untraced: isUntraced(recipe, key),
+	};
+}
+
+/** The type arguments `EffectFunction` and `entry` take after the handles: whether the value is an `Option`, and the rewrites. */
+function functionArguments(use: CallUse): string {
+	if (use.rewrites.length > 0) return `, ${use.option}, ${rewritesType(use.rewrites)}`;
+	return use.option ? ", true" : "";
+}
+
+/** The wrapped handle the present value of signatures that may resolve to nothing is. */
+function presentHandleOf(signatures: ReadonlyArray<Signature>, recipe: Recipe): string | undefined {
+	return signatures
+		.map((signature) => presentHandle(signature.resolves ?? signature.returns, recipe.handles))
+		.find((found) => found !== undefined);
+}
+
+/**
  * A class's static factories in facade form, under the class's own name (`ModelRuntime.create(...)`, an Effect of the
  * `ModelRuntime` facade): those that are async or produce a wrapped handle, as the draft offers functions. A class
  * whose constructor is private is made only this way. Each is bound to the class: statics call each other through
  * `this`.
  */
-function staticsSource(item: Extract<Export, { kind: "class" }>, surface: Surface, recipe: Recipe): ReadonlyArray<string> {
+function staticsSource(
+	item: Extract<Export, { kind: "class" }>,
+	surface: Surface,
+	recipe: Recipe,
+): ReadonlyArray<string> {
 	const offered = Object.entries(item.statics ?? {})
-		.map(([name, signatures]) => [name, signatures.filter((signature) => !signature.traits.includes("callback"))] as const)
-		.filter(([, kept]) => kept.some((signature) => signature.traits.includes("async") || (signature.handle !== undefined && recipe.handles[signature.handle] !== undefined)))
+		.map(
+			([name, signatures]) =>
+				[name, signatures.filter((signature) => !signature.traits.includes("callback"))] as const,
+		)
+		.filter(([, kept]) =>
+			kept.some(
+				(signature) =>
+					signature.traits.includes("async") ||
+					(signature.handle !== undefined && recipe.handles[signature.handle] !== undefined),
+			),
+		)
 		.sort(([a], [b]) => a.localeCompare(b));
 	if (offered.length === 0) return [];
 	const qualify = qualifier(surface);
@@ -482,24 +1077,39 @@ function staticsSource(item: Extract<Export, { kind: "class" }>, surface: Surfac
 	// Each member's type, written as the object's annotation (see `exportSource`), then its value.
 	const members = offered.map(([name, kept]) => {
 		const key = `${item.name}.${name}`;
-		const into = producedHandle(kept, recipe);
-		const args = `Upstream.${item.name}${propertyAccess(name)}.bind(Upstream.${item.name}), ${JSON.stringify(key)}, ${into === undefined ? "undefined" : `kinds.${into}`}, kinds, classify${entryOptions(kept)}`;
+		const use = callUse(key, kept, recipe);
+		const into = producedHandle(kept, recipe) ?? (use.option ? presentHandleOf(kept, recipe) : undefined);
+		const args = `Upstream.${item.name}${propertyAccess(name)}.bind(Upstream.${item.name}), ${JSON.stringify(key)}, ${into === undefined ? "undefined" : `kinds.${into}`}, kinds, classify${entryOptions(kept, use)}`;
 		if (isExplicit(key, kept, recipe)) {
-			const type = `{ ${kept.map((signature) => `${explicitSignature(item.name, signature, qualify, accept, "export")};`).join(" ")} }`;
-			return { name, type, value: `Effectify.entryAs<Statics${item.name}[${JSON.stringify(name)}]>(${args})`, key, explicit: true };
+			const type = `{ ${kept.map((signature) => `${explicitSignature(item.name, signature, qualify, accept, { ...use, mode: "export" })};`).join(" ")} }`;
+			return {
+				name,
+				type,
+				value: `Effectify.entryAs<Statics${item.name}[${JSON.stringify(name)}]>(${args})`,
+				key,
+				explicit: true,
+			};
 		}
-		const type = `Effectify.EffectFunction<typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles>`;
-		return { name, type, value: `Effectify.entry<typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles>(${args})`, key, explicit: false };
+		const typeArguments = `typeof Upstream.${item.name}${propertyAccess(name)}, Failure, Handles${functionArguments(use)}`;
+		const plain = `Effectify.EffectFunction<${typeArguments}>`;
+		// Brands are types only: the value upstream resolves to is the branded one.
+		const type =
+			use.results.length === 0 ? plain : `Effectify.ResolvingBranded<${plain}, ${rewritesType(use.results)}>`;
+		const value = `Effectify.entry<${typeArguments}>(${args})${use.results.length === 0 ? "" : ` as Statics${item.name}[${JSON.stringify(name)}]`}`;
+		return { name, type, value, key, explicit: false };
 	});
 	return [
 		`/** The static factories of ${recipe.package}'s \`${item.name}\`, in facade form. */`,
 		`interface Statics${item.name} {`,
-		...members.map((member) => `\treadonly ${memberName(member.name)}: ${member.type};${member.explicit ? ` // explicit: ${member.key}` : ""}`),
+		...members.map(
+			(member) =>
+				`\treadonly ${memberName(member.name)}: ${member.type};${member.explicit ? ` // explicit: ${member.key}` : ""}`,
+		),
 		"}",
 		"",
-		`/** The static factories of ${recipe.package}'s \`${item.name}\` in facade form: every call is an Effect. */`,
+		`/** The static factories of ${recipe.package}'s \`${item.name}\` in facade form: every call is a traced Effect. */`,
 		`export const ${item.name}: Statics${item.name} = {`,
-		...members.map((member) => `\t${memberName(member.name)}: ${member.value},`),
+		...members.map((member) => `\t${ownKey(member.name)}: ${member.value},`),
 		"};",
 	];
 }
@@ -515,13 +1125,19 @@ function instantiated(name: string, signatures: ReadonlyArray<Signature>, surfac
 	// `createTransport` has plain ones too, which it would drop. So only an export generic in every signature is.
 	const lists = signatures.map((signature) => signature.typeParameters);
 	const list = lists[0];
-	if (list === undefined || lists.some((other) => other === undefined || splitTopLevel(other).length !== splitTopLevel(list).length)) {
+	if (
+		list === undefined ||
+		lists.some((other) => other === undefined || splitTopLevel(other).length !== splitTopLevel(list).length)
+	) {
 		return `typeof Upstream.${name}`;
 	}
 	const qualify = qualifier(surface);
 	const exported = new Set([...surface.typeExports, ...surface.exports.map((item) => item.name)]);
 	const nameable = (type: string | undefined) =>
-		type !== undefined && [...type.matchAll(/(?<![.\w$'"])([A-Za-z_$][\w$]*)/g)].every(([word]) => exported.has(word ?? "") || BUILT_IN_TYPES.has(word ?? ""));
+		type !== undefined &&
+		[...type.matchAll(/(?<![.\w$'"])([A-Za-z_$][\w$]*)/g)].every(
+			([word]) => exported.has(word ?? "") || BUILT_IN_TYPES.has(word ?? ""),
+		);
 	const argumentsList = splitTopLevel(list).map((parameter) => {
 		const { constraint, fallback } = typeParameterParts(parameter);
 		if (nameable(fallback)) return qualify(fallback ?? "any", []);
@@ -533,13 +1149,45 @@ function instantiated(name: string, signatures: ReadonlyArray<Signature>, surfac
 
 /** Type names every program has: a default or constraint made of these and upstream's exports can be written out. */
 const BUILT_IN_TYPES = new Set([
-	"string", "number", "boolean", "bigint", "symbol", "object", "unknown", "any", "never", "void", "undefined", "null", "true", "false",
-	"keyof", "typeof", "readonly", "Array", "ReadonlyArray", "Record", "Partial", "Required", "Readonly", "Promise", "Map", "Set", "Date",
-	"RegExp", "Error", "Buffer", "Uint8Array", "Function",
+	"string",
+	"number",
+	"boolean",
+	"bigint",
+	"symbol",
+	"object",
+	"unknown",
+	"any",
+	"never",
+	"void",
+	"undefined",
+	"null",
+	"true",
+	"false",
+	"keyof",
+	"typeof",
+	"readonly",
+	"Array",
+	"ReadonlyArray",
+	"Record",
+	"Partial",
+	"Required",
+	"Readonly",
+	"Promise",
+	"Map",
+	"Set",
+	"Date",
+	"RegExp",
+	"Error",
+	"Buffer",
+	"Uint8Array",
+	"Function",
 ]);
 
 /** A type parameter declaration's constraint and default: `T extends A = B` gives A and B. */
-function typeParameterParts(parameter: string): { readonly constraint: string | undefined; readonly fallback: string | undefined } {
+function typeParameterParts(parameter: string): {
+	readonly constraint: string | undefined;
+	readonly fallback: string | undefined;
+} {
 	const [head = "", ...rest] = splitTopLevel(parameter, "=");
 	const fallback = rest.length === 0 ? undefined : rest.join("=").trim();
 	const extendsAt = head.indexOf(" extends ");
@@ -555,7 +1203,11 @@ function splitTopLevel(text: string, separator = ","): ReadonlyArray<string> {
 		const char = text[index];
 		if (char === "<" || char === "(" || char === "{" || char === "[") depth++;
 		else if ((char === ">" && text[index - 1] !== "=") || char === ")" || char === "}" || char === "]") depth--;
-		else if (char === separator && depth === 0 && !(separator === "=" && (text[index + 1] === ">" || text[index - 1] === "="))) {
+		else if (
+			char === separator &&
+			depth === 0 &&
+			!(separator === "=" && (text[index + 1] === ">" || text[index - 1] === "="))
+		) {
 			parts.push(text.slice(start, index).trim());
 			start = index + 1;
 		}
@@ -564,72 +1216,144 @@ function splitTopLevel(text: string, separator = ","): ReadonlyArray<string> {
 	return parts.filter((part) => part.length > 0);
 }
 
-/** A field an upstream error class declares, as its tagged error carries it: its name there and its Schema. */
+/**
+ * A field an upstream error class declares, as its tagged error carries it: its name there, its Schema, and how its
+ * value is copied (`carriedValue`): `text`, a string scrubbed of the call's secrets; `value`, as it is (a number, a
+ * boolean, a literal, an identifier such as `code`); `sealed`, any other value, as `Redacted`.
+ */
 interface CarriedField {
 	readonly upstream: string;
 	readonly name: string;
 	readonly schema: string;
+	readonly copy: "text" | "value" | "sealed";
+}
+
+/** How `classify` copies a carried field's value (`read`, upstream's own field) into its tagged error. */
+function carriedValue(field: CarriedField, read: string): string {
+	switch (field.copy) {
+		case "text":
+			return `Effectify.scrubbed(${read}, secrets)`;
+		case "value":
+			return read;
+		case "sealed":
+			return `Redacted.make(${read})`;
+	}
+}
+
+/**
+ * Upstream's identifiers a failure carries as they are, never scrubbed: they name the failure, not the call (the secret
+ * `AUTH` must not turn the code `EAUTH` into `E<redacted>`).
+ */
+const IDENTIFIERS: ReadonlySet<string> = new Set(["code", "errno", "syscall"]);
+
+/** Whether the facade's errors carry a field as `Redacted`, which the facade's imports then name. */
+function sealsFields(surface: Surface, recipe: Recipe): boolean {
+	return recipe.errors.some((error) =>
+		carriedFields(surface, error, reasonCases(error, false).length > 0).some((field) => field.copy === "sealed"),
+	);
 }
 
 /**
  * The fields of upstream error class `name` its tagged error carries. Upstream's `code` replaces the facade's (a
- * JSON-RPC code is a number); an `operation` of upstream's is `upstreamOperation`, the facade's own names the call.
- * Each field's Schema follows its type: strings, numbers, booleans and string literals as such, `null` and an
- * optional field kept, anything else `Unknown`. `allOptional`: the error is also chosen by a code, with no instance.
+ * JSON-RPC code is a number); an `operation` of upstream's is `upstreamOperation`, the facade's own names the call,
+ * and a `reason` of upstream's is `upstreamReason` when the facade adds its own (`hasReason`). Each field's Schema
+ * follows its type: strings, numbers (`Finite`), booleans and string literals as such, `null` and an optional field
+ * kept; anything else is upstream's own value, which may hold what upstream kept of a secret, carried as `Redacted`
+ * like the cause. `allOptional`: the error is also chosen by a code, with no instance.
  */
-function upstreamFields(surface: Surface, name: string, allOptional: boolean): ReadonlyArray<CarriedField> {
+function upstreamFields(
+	surface: Surface,
+	name: string,
+	allOptional: boolean,
+	hasReason: boolean,
+): ReadonlyArray<CarriedField> {
 	const item = surface.exports.find((candidate) => candidate.kind === "class" && candidate.name === name);
 	if (item?.kind !== "class") return [];
-	return (item.fields ?? []).map((field) => ({
-		upstream: field.name,
-		name: field.name === "operation" ? "upstreamOperation" : field.name,
-		schema: fieldSchema(field.type, field.optional || allOptional),
-	}));
+	const renamed: Readonly<Record<string, string>> = hasReason
+		? { operation: "upstreamOperation", reason: "upstreamReason" }
+		: { operation: "upstreamOperation" };
+	return (item.fields ?? []).map((field) => {
+		const base = fieldBase(field.type);
+		const optional = field.optional || allOptional;
+		// An identifier (bullmq's `RelayError.code`, typed `RelayErrorCode`) is carried as it is, whatever its type.
+		if (IDENTIFIERS.has(field.name))
+			return {
+				upstream: field.name,
+				name: renamed[field.name] ?? field.name,
+				schema: base === undefined ? "Schema.Unknown" : fieldSchema(field.type, base, optional),
+				copy: "value" as const,
+			};
+		return {
+			upstream: field.name,
+			name: renamed[field.name] ?? field.name,
+			schema: base === undefined ? "Effectify.Sealed" : fieldSchema(field.type, base, optional),
+			copy: base === undefined ? ("sealed" as const) : base === STRING ? ("text" as const) : ("value" as const),
+		};
+	});
 }
 
-function fieldSchema(type: string, optional: boolean): string {
+/** The Schema of a field's present values (`string` of `string | undefined`), undefined for any type but a primitive's. */
+function fieldBase(type: string): string | undefined {
+	const present = splitTopLevel(type, "|").filter((part) => part !== "undefined" && part !== "null");
+	if (present.length > 0 && present.every((part) => /^"[^"\\]*"$/.test(part)))
+		return `Schema.Literals([${present.join(", ")}])`;
+	const [only] = present;
+	if (present.length === 1 && only !== undefined)
+		return Object.hasOwn(PRIMITIVE_SCHEMAS, only) ? PRIMITIVE_SCHEMAS[only] : undefined;
+	return present.length === 2 && present.includes("true") && present.includes("false") ? "Schema.Boolean" : undefined;
+}
+
+/** A field's Schema from that of its present values: `null` and an absent value kept. */
+function fieldSchema(type: string, base: string, optional: boolean): string {
 	const parts = splitTopLevel(type, "|");
-	const present = parts.filter((part) => part !== "undefined" && part !== "null");
-	const nullable = parts.includes("null");
-	const absent = optional || parts.includes("undefined");
-	const base = present.length > 0 && present.every((part) => /^"[^"\\]*"$/.test(part))
-		? `Schema.Literals([${present.join(", ")}])`
-		: present.length === 1 && present[0] !== undefined && present[0] in PRIMITIVE_SCHEMAS
-			? (PRIMITIVE_SCHEMAS[present[0]] ?? "Schema.Unknown")
-			: present.length === 2 && present.includes("true") && present.includes("false")
-				? "Schema.Boolean"
-				: undefined;
-	// `Unknown` takes null and undefined already.
-	if (base === undefined) return "Schema.Unknown";
-	const withNull = nullable ? `Schema.NullOr(${base})` : base;
-	return absent ? `Schema.optional(${withNull})` : withNull;
+	const withNull = parts.includes("null") ? `Schema.NullOr(${base})` : base;
+	return optional || parts.includes("undefined") ? `Schema.optional(${withNull})` : withNull;
 }
 
-const PRIMITIVE_SCHEMAS: Readonly<Record<string, string>> = { string: "Schema.String", number: "Schema.Number", boolean: "Schema.Boolean" };
+// The Schema of a string field, which `classify` scrubs of the call's secrets unless it is an identifier.
+const STRING = "Schema.String";
+
+// A number of upstream's is `Finite`, constructed unchecked (`Effectify.unchecked`): a NaN upstream sets is kept.
+const PRIMITIVE_SCHEMAS: Readonly<Record<string, string>> = {
+	string: STRING,
+	number: "Schema.Finite",
+	boolean: "Schema.Boolean",
+};
 
 /** Whether an export is typed by its overloads written out: it is generic, and the recipe does not keep it derived. */
 function isExplicit(name: string, signatures: ReadonlyArray<Signature>, recipe: Recipe): boolean {
-	return signatures.length > 0 && signatures.some((signature) => signature.typeParameters !== undefined) && !recipe.derived.includes(name);
+	return signatures.some((signature) => signature.typeParameters !== undefined) && !recipe.derived.includes(name);
 }
 
 /**
  * The runtime options of an exported function, as a trailing argument (`, { signal: { index: 1 } }`), empty when it
- * has none: where it takes its `AbortSignal`, and whether every signature the facade keeps returns an async iterable
- * that is no handle (its facade type is then a `Stream`, which the runtime must return too).
+ * has none: where it takes its `AbortSignal`; whether every signature the facade keeps returns an async iterable
+ * that is no handle (its facade type is then a `Stream`, which the runtime must return too); whether its value may
+ * be absent (an `Option`); its secrets; and whether it runs untraced.
  */
-function entryOptions(signatures: ReadonlyArray<Signature>): string {
+function entryOptions(signatures: ReadonlyArray<Signature>, use: CallUse): string {
 	const slot = agreedSignal(signatures);
 	const stream = signatures.length > 0 && signatures.every((signature) => signature.traits.includes("stream"));
-	const fields = [...(slot === undefined ? [] : [`signal: ${slotSource(slot)}`]), ...(stream ? ["stream: true"] : [])];
+	const fields = [
+		...(slot === undefined ? [] : [`signal: ${slotSource(slot)}`]),
+		...(stream ? ["stream: true"] : []),
+		...(use.option ? ["option: true"] : []),
+		...(use.untraced ? ["untraced: true"] : []),
+		...(use.secrets.length === 0 ? [] : [`secrets: ${secretsValue(use.secrets)}`]),
+	];
 	return fields.length === 0 ? "" : `, { ${fields.join(", ")} }`;
 }
 
 function slotSource(slot: SignalSlot): string {
-	return slot.property === undefined ? `{ index: ${slot.index} }` : `{ index: ${slot.index}, property: ${JSON.stringify(slot.property)} }`;
+	return slot.property === undefined
+		? `{ index: ${slot.index} }`
+		: `{ index: ${slot.index}, property: ${JSON.stringify(slot.property)} }`;
 }
 
 function producedHandle(signatures: ReadonlyArray<Signature>, recipe: Recipe): string | undefined {
-	return signatures.find((signature) => signature.handle !== undefined && recipe.handles[signature.handle] !== undefined)?.handle;
+	return signatures.find(
+		(signature) => signature.handle !== undefined && recipe.handles[signature.handle] !== undefined,
+	)?.handle;
 }
 
 /** The methods of handle `name` the facade wraps: all the analyzer read, less the recipe's `exclude`s. */
@@ -659,7 +1383,11 @@ function packageJson(recipe: Recipe): string {
 			license: "MIT",
 			exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },
 			files: ["dist", "README.md", "SKILL.md"],
-			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests" },
+			scripts: {
+				build: "tsc -p tsconfig.build.json",
+				check: "tsc -p tsconfig.json",
+				test: "vitest --run --passWithNoTests",
+			},
 			dependencies,
 			peerDependencies: { effect: `~${TOOLCHAIN.effect}` },
 			devDependencies: sorted({
@@ -670,7 +1398,11 @@ function packageJson(recipe: Recipe): string {
 				vitest: TOOLCHAIN.vitest,
 				...recipe.testDependencies,
 			}),
-			effectified: { engine: ENGINE_VERSION, upstream: `${recipe.package}@${recipe.version}`, types: `${recipe.types.package}@${recipe.types.version}` },
+			effectified: {
+				engine: ENGINE_VERSION,
+				upstream: `${recipe.package}@${recipe.version}`,
+				types: `${recipe.types.package}@${recipe.types.version}`,
+			},
 		},
 		null,
 		2,
@@ -697,6 +1429,7 @@ const TSCONFIG = `${JSON.stringify(
 			rewriteRelativeImportExtensions: true,
 			skipLibCheck: true,
 			noEmit: true,
+			plugins: [EFFECT_PLUGIN],
 		},
 		include: ["src", "test"],
 	},
@@ -705,7 +1438,11 @@ const TSCONFIG = `${JSON.stringify(
 )}\n`;
 
 const TSCONFIG_BUILD = `${JSON.stringify(
-	{ extends: "./tsconfig.json", compilerOptions: { noEmit: false, outDir: "dist", rootDir: "src", declaration: true }, include: ["src"] },
+	{
+		extends: "./tsconfig.json",
+		compilerOptions: { noEmit: false, outDir: "dist", rootDir: "src", declaration: true },
+		include: ["src"],
+	},
 	null,
 	2,
 )}\n`;

@@ -1,0 +1,78 @@
+{
+	"$schema": "https://effectified.dev/schema/recipe.json",
+	"package": "sharp",
+	"version": "0.35.5",
+	"types": {
+		"from": "bundled",
+		"package": "sharp",
+		"version": "0.35.5"
+	},
+	"name": "@effectified/sharp",
+	"prefix": "Sharp",
+	"tagline": "a builder that is also a Node stream",
+	"exports": [
+		"default"
+	],
+	"handles": {
+		"Sharp": {
+			"events": []
+		}
+	},
+	"errors": [
+		{
+			"tag": "SharpError",
+			"codes": [
+				"ERR_DLOPEN_DISABLED"
+			]
+		}
+	],
+	"services": [],
+	"methods": {},
+	"derived": [],
+	"testDependencies": {},
+	"decisions": [
+		{
+			"id": "exports",
+			"question": "Which exported functions and classes does the facade offer?",
+			"answer": "default",
+			"why": "every exported function or class that is async or yields a handle",
+			"by": "engine"
+		},
+		{
+			"id": "handles.Sharp.release",
+			"question": "Which method releases a Sharp, so acquiring one opens a scope? (\"none\" keeps it unscoped)",
+			"answer": "none",
+			"why": "its type has no release method",
+			"by": "engine"
+		},
+		{
+			"id": "handles.Sharp.events",
+			"question": "Which events of Sharp does the facade offer as Streams? (\"none\" for none)",
+			"answer": "none",
+			"why": "its `on` names no events",
+			"by": "engine"
+		},
+		{
+			"id": "errors",
+			"question": "Which upstream failures become which tagged errors?",
+			"answer": "SharpError",
+			"why": "exported error classes, most specific first, then the catch-all SharpError carrying `code` (the source sets ERR_DLOPEN_DISABLED)",
+			"by": "engine"
+		},
+		{
+			"id": "services",
+			"question": "Which handles are provided as services (Context.Service with a layer)?",
+			"answer": "none",
+			"why": "every offered export that acquires a releasable handle",
+			"by": "engine"
+		},
+		{
+			"id": "revision",
+			"question": "Which revision of this upstream version is the facade?",
+			"answer": "4",
+			"why": "engine 0.3.0: interrupting a call aborts upstream's signal, a facade handed back to upstream is unwrapped, optional methods are wrapped, and errors carry their upstream class's fields",
+			"by": "agent"
+		}
+	],
+	"revision": 4
+}

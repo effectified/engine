@@ -24,13 +24,27 @@ const MAX_FILES = 2000;
 export const scan = Effect.fn("scan")(function* (workspace: Workspace) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const entries = yield* fs.readDirectory(workspace.packageDirectory, { recursive: true }).pipe(Effect.orElseSucceed(() => []));
+	const entries = yield* fs
+		.readDirectory(workspace.packageDirectory, { recursive: true })
+		.pipe(Effect.orElseSucceed(() => []));
 	const files = entries
-		.filter((file) => /\.(c|m)?js$/.test(file) && !file.split(path.sep).includes("node_modules") && !/(^|\/)(test|tests|__tests__)\//.test(file))
+		.filter(
+			(file) =>
+				/\.(c|m)?js$/.test(file) &&
+				!file.split(path.sep).includes("node_modules") &&
+				!/(^|\/)(test|tests|__tests__)\//.test(file),
+		)
 		.slice(0, MAX_FILES);
-	const found = { classes: new Map<string, string>(), thrown: new Map<string, number>(), codes: new Map<string, number>(), events: new Map<string, number>() };
+	const found = {
+		classes: new Map<string, string>(),
+		thrown: new Map<string, number>(),
+		codes: new Map<string, number>(),
+		events: new Map<string, number>(),
+	};
 	for (const file of files) {
-		const source = yield* fs.readFileString(path.join(workspace.packageDirectory, file)).pipe(Effect.orElseSucceed(() => ""));
+		const source = yield* fs
+			.readFileString(path.join(workspace.packageDirectory, file))
+			.pipe(Effect.orElseSucceed(() => ""));
 		if (source.length > 0) yield* Effect.sync(() => read(source, found));
 	}
 	return {
@@ -60,7 +74,8 @@ function read(source: string, found: Found): void {
 		const name = node.getMatch("NAME")?.text();
 		const base = node.getMatch("BASE")?.text();
 		// A minified bundle renames classes (`class P extends Error`): such names say nothing.
-		if (name !== undefined && base !== undefined && /Error$/.test(base) && name.length > 2) found.classes.set(name, base);
+		if (name !== undefined && base !== undefined && base.endsWith("Error") && name.length > 2)
+			found.classes.set(name, base);
 	}
 	for (const node of root.findAll("throw new $NAME($$$)")) {
 		const name = node.getMatch("NAME")?.text();

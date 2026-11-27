@@ -9,6 +9,7 @@
 	},
 	"name": "@effectified/webawesome",
 	"prefix": "Webawesome",
+	"tagline": "78 elements, form controls and a dialog",
 	"exports": [
 		"discover",
 		"allDefined"
@@ -40,6 +41,7 @@
 		"mounts": []
 	},
 	"testDependencies": {},
+	"revision": 4,
 	"decisions": [
 		{
 			"id": "exports",
@@ -61,6 +63,13 @@
 			"answer": "none",
 			"why": "every offered export that acquires a releasable handle",
 			"by": "engine"
+		},
+		{
+			"id": "revision",
+			"question": "Which revision of this upstream version is the facade?",
+			"answer": "4",
+			"why": "engine 0.4.0: the facade is held to @effect/tsgo and the GritQL idioms (its tsconfig.json carries the rules), its changes mounts read an element's state through effect's Record and Array, and its smoke test decodes the page's JSON through Schema",
+			"by": "agent"
 		}
 	]
 }

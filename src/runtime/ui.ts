@@ -3,7 +3,7 @@
 // a map) to the element it renders into. It depends on `effect` and `@effect/ui` alone.
 
 import { type Command, Mount } from "@effect/ui";
-import { Effect, Queue, Schema, Stream } from "effect";
+import { Array as Arr, Effect, Queue, Record, Schema, Stream } from "effect";
 
 /**
  * A Schema of upstream's own type `T` that accepts any value. Element properties and mount args are typed by
@@ -31,7 +31,8 @@ export const changesMount = <E extends object, const K extends keyof E & string>
 					// The binding mounts it only on its own element: `node` is an `E` (whose mixin types may not say HTMLElement).
 					const element = node as unknown as E;
 					const listener = (event: Event) => {
-						const state = Object.fromEntries(keys.map((key) => [key, element[key]])) as Pick<E, K>;
+						// Each key of `K` is read off the element: the record is exactly `Pick<E, K>`, which `fromEntries` cannot say.
+						const state = Record.fromEntries(Arr.map(keys, (key) => [key, element[key]] as const)) as unknown as Pick<E, K>;
 						Queue.offerUnsafe(queue, { event: event.type === "input" ? "input" : "change", ...state });
 					};
 					node.addEventListener("input", listener);

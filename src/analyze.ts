@@ -18,19 +18,34 @@ import {
 	TypeFlags,
 	type TypeReference,
 } from "typescript/unstable/sync";
-import type { Export, Handle, Signature, Surface, Trait } from "./surface.ts";
+import {
+	type Export,
+	type Handle,
+	isIdentifierName,
+	isRelease,
+	type Signature,
+	type Surface,
+	type Trait,
+} from "./surface.ts";
 import type { Workspace } from "./workspace.ts";
 
 /** Reading the types failed. */
-export class AnalyzeError extends Schema.TaggedError<AnalyzeError>()("AnalyzeError", {
-	target: Schema.String,
-	reason: Schema.String,
-}) {}
+export class AnalyzeError extends Schema.TaggedError<AnalyzeError, { readonly brand: unique symbol }>()(
+	"AnalyzeError",
+	{
+		target: Schema.String,
+		reason: Schema.String,
+	},
+) {}
 
 /** Reads the surface of an installed target. The native checker runs for the duration of the call. */
 export const analyze = Effect.fn("analyze")(function* (workspace: Workspace) {
 	const label = `${workspace.target.package}@${workspace.target.version}`;
-	const fail = (cause: unknown) => new AnalyzeError({ target: label, reason: (cause instanceof Error ? cause.message : String(cause)).split("\n")[0] ?? "" });
+	const fail = (cause: unknown) =>
+		new AnalyzeError({
+			target: label,
+			reason: (cause instanceof Error ? cause.message : String(cause)).split("\n")[0] ?? "",
+		});
 	return yield* Effect.acquireUseRelease(
 		Effect.try({ try: () => new API({ cwd: workspace.directory }), catch: fail }),
 		(api) => Effect.try({ try: () => read(api, workspace), catch: fail }),
@@ -50,9 +65,6 @@ const MAX_DEPTH = 4;
 /** What every error has already: its facade carries these as `message` and `cause`. */
 const ERROR_OWN = new Set(["name", "message", "stack", "cause"]);
 
-/** Method names that release what they are called on. */
-const RELEASE_NAMES = new Set(["close", "quit", "disconnect", "destroy", "end", "dispose", "stop", "shutdown", "release", "terminate"]);
-
 function read(api: API, workspace: Workspace): Surface {
 	const project = api.updateSnapshot({ openProjects: [workspace.tsconfig] }).getProjects()[0];
 	if (project === undefined) throw new Error(`no project for ${workspace.tsconfig}`);
@@ -64,7 +76,9 @@ function read(api: API, workspace: Workspace): Surface {
 	// getAliasedSymbol is only defined on aliases: the native checker panics on any other symbol.
 	const moduleSymbol = (local.flags & SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(local) : local;
 	const moduleExports = checker.getExportsOfModule(moduleSymbol);
-	const typeExports = moduleExports.filter((symbol) => (symbol.flags & SymbolFlags.Value) === 0).map((symbol) => symbol.name);
+	const typeExports = moduleExports
+		.filter((symbol) => (symbol.flags & SymbolFlags.Value) === 0)
+		.map((symbol) => symbol.name);
 	const exported = new Set(moduleExports.map((symbol) => symbol.name));
 	const namespaceType = checker.getTypeOfSymbol(local);
 	if (namespaceType === undefined) throw new Error("the entry's `lib` has no type");
@@ -91,7 +105,10 @@ function read(api: API, workspace: Workspace): Surface {
 		package: workspace.target.package,
 		version: workspace.target.version,
 		types: workspace.target.types,
-		entry: callableDefault && !exports.some((item) => item.kind === "function" && item.name !== "default") ? "callable" : "named",
+		entry:
+			callableDefault && !exports.some((item) => item.kind === "function" && item.name !== "default")
+				? "callable"
+				: "named",
 		exports: exports.filter((item) => !(item.name === "default" && item.kind === "value")),
 		handles: Object.fromEntries(reader.handles),
 		typeExports,
@@ -101,12 +118,19 @@ function read(api: API, workspace: Workspace): Surface {
 /** Reads exports and the handles reachable from them, breadth first. */
 class SurfaceReader {
 	readonly handles = new Map<string, Handle>();
-	private readonly queue: Array<{ readonly type: Type; readonly name: string; readonly typeRef: string; readonly depth: number }> = [];
+	private readonly queue: Array<{
+		readonly type: Type;
+		readonly name: string;
+		readonly typeRef: string;
+		readonly depth: number;
+	}> = [];
 	private readonly checker: Checker;
 	private readonly emitter: Emitter;
 	/** `/node_modules/<package>/` of each package whose declarations are the library's API. */
 	private readonly roots: ReadonlyArray<string>;
 	private readonly exported: ReadonlySet<string>;
+	/** The symbol of each handle's type, by the handle's name. */
+	private readonly symbols = new Map<string, number>();
 
 	constructor(checker: Checker, emitter: Emitter, owned: ReadonlyArray<string>, exported: ReadonlySet<string>) {
 		this.checker = checker;
@@ -119,17 +143,23 @@ class SurfaceReader {
 	readExport(symbol: TsSymbol): Export | undefined {
 		const type = this.checker.getTypeOfSymbol(symbol);
 		if (type === undefined) return undefined;
-		const reference = `typeof Upstream.${symbol.name}`;
+		// An export named by a string (`export { x as "review-sentinel" }`) is reached as `typeof Upstream["review-sentinel"]`.
+		const reference = `typeof Upstream${isIdentifierName(symbol.name) ? `.${symbol.name}` : `[${JSON.stringify(symbol.name)}]`}`;
 		// A value both callable and constructible (sharp) is used as a factory: it is read as a function.
 		const calls = this.checker.getSignaturesOfType(type, SignatureKind.Call);
 		if (calls.length > 0) {
-			return { kind: "function", name: symbol.name, signatures: calls.map((signature) => this.readSignature(signature, reference, 0)) };
+			return {
+				kind: "function",
+				name: symbol.name,
+				signatures: calls.map((signature) => this.readSignature(signature, reference, 0)),
+			};
 		}
 		const constructors = this.checker.getSignaturesOfType(type, SignatureKind.Construct);
 		if (constructors.length > 0) {
 			const instance = this.checker.getReturnTypeOfSignature(constructors[0] as TsSignature);
 			const error = instance !== undefined && this.isError(instance);
-			const handle = instance === undefined || error ? undefined : this.handleOf(instance, `InstanceType<${reference}>`, 0);
+			const handle =
+				instance === undefined || error ? undefined : this.handleOf(instance, `InstanceType<${reference}>`, 0);
 			const base = instance === undefined ? undefined : this.baseClass(instance);
 			// A private constructor is still a construct signature to the checker; such a class is made by its statics.
 			// An abstract class is never constructed either: its instances come from its subclasses or statics.
@@ -149,8 +179,24 @@ class SurfaceReader {
 				...(base === undefined ? {} : { base }),
 			};
 		}
-		const constEnum = (symbol.flags & SymbolFlags.ConstEnum) !== 0;
-		return { kind: "value", name: symbol.name, type: this.print(type).slice(0, 200), ...(constEnum ? { constEnum: true as const } : {}) };
+		return {
+			kind: "value",
+			name: symbol.name,
+			type: this.print(type).slice(0, 200),
+			...(this.erased(symbol) ? { erased: "declarations" as const } : {}),
+		};
+	}
+
+	/**
+	 * Whether a value export exists in no JavaScript: a `const enum`, or a namespace whose only values are const enums
+	 * (devtools-protocol's `Protocol`, which puppeteer re-exports), both inlined at compile time. Read on the declared
+	 * symbol: a re-export is an alias.
+	 */
+	private erased(symbol: TsSymbol): boolean {
+		// getAliasedSymbol is only defined on aliases: the native checker panics on any other symbol.
+		const declared = (symbol.flags & SymbolFlags.Alias) !== 0 ? this.checker.getAliasedSymbol(symbol) : symbol;
+		const values = declared.flags & SymbolFlags.Value & ~(SymbolFlags.ConstEnum | SymbolFlags.ValueModule);
+		return values === 0 && (declared.flags & (SymbolFlags.ConstEnum | SymbolFlags.ConstEnumOnlyModule)) !== 0;
 	}
 
 	/** Reads every queued handle, which may queue more, down to MAX_DEPTH. */
@@ -158,17 +204,26 @@ class SurfaceReader {
 		for (let next = this.queue.shift(); next !== undefined; next = this.queue.shift()) {
 			if (this.handles.has(next.name)) continue;
 			// Reserve the name first: a handle's methods may return the handle itself.
-			this.handles.set(next.name, { name: next.name, typeRef: next.typeRef, methods: {}, properties: {}, events: [], releases: [] });
+			this.handles.set(next.name, {
+				name: next.name,
+				typeRef: next.typeRef,
+				methods: {},
+				properties: {},
+				events: [],
+				releases: [],
+			});
 			this.handles.set(next.name, this.readHandle(next.type, next.name, next.typeRef, next.depth));
 		}
 	}
 
 	private readHandle(type: Type, name: string, typeRef: string, depth: number): Handle {
 		const methods: Record<string, ReadonlyArray<Signature>> = {};
+		const optionalMethods: Array<string> = [];
 		const properties: Record<string, { readonly type: string; readonly handle?: string }> = {};
 		let events: ReadonlyArray<string> = [];
 		for (const property of this.checker.getPropertiesOfType(type)) {
-			if (property.name.startsWith("_") || property.name.startsWith("#") || property.name.startsWith("__@")) continue;
+			if (property.name.startsWith("_") || property.name.startsWith("#") || property.name.startsWith("__@"))
+				continue;
 			// Members a handle inherits from outside the target (Node's streams, EventEmitter) are not the library's API,
 			// and neither are its private and protected ones (the checker lists them as properties too).
 			if (!this.isTargetDeclaration(property) || !this.isPublic(property)) continue;
@@ -177,22 +232,44 @@ class SurfaceReader {
 			// An optional method (`refresh?(): Promise<void>`) is a method too, its type `F | undefined`. An optional field
 			// holding a function (`onclose?: () => void`) is a slot the program fills: it stays a property.
 			const optional = (property.flags & SymbolFlags.Optional) !== 0;
-			const callable = optional && property.declarations.every((declaration) => declaration.kind === SyntaxKind.MethodSignature || declaration.kind === SyntaxKind.MethodDeclaration);
-			const signatures = this.checker.getSignaturesOfType(callable ? (this.checker.getNonNullableType(propertyType) ?? propertyType) : propertyType, SignatureKind.Call);
+			const callable =
+				optional &&
+				property.declarations.every(
+					(declaration) =>
+						declaration.kind === SyntaxKind.MethodSignature || declaration.kind === SyntaxKind.MethodDeclaration,
+				);
+			const signatures = this.checker.getSignaturesOfType(
+				callable ? (this.checker.getNonNullableType(propertyType) ?? propertyType) : propertyType,
+				SignatureKind.Call,
+			);
 			const member = `${typeRef}[${JSON.stringify(property.name)}]`;
 			const via = callable ? `NonNullable<${member}>` : member;
 			if (signatures.length === 0) {
 				const handle = this.handleOf(propertyType, via, depth + 1);
-				properties[property.name] = { type: this.print(propertyType).slice(0, 300), ...(handle === undefined ? {} : { handle }) };
+				properties[property.name] = {
+					type: this.print(propertyType).slice(0, 300),
+					...(handle === undefined ? {} : { handle }),
+				};
 				continue;
 			}
 			methods[property.name] = signatures.map((signature) => this.readSignature(signature, via, depth + 1));
+			if (callable) optionalMethods.push(property.name);
 			if (property.name === "on") events = this.eventNames(signatures);
 		}
 		// `end` finishes what a producer writes (a stream's `push`/`write`, an iterable's last value): it releases nothing.
 		const producer = "push" in methods || "write" in methods || this.isAsyncIterable(type);
-		const releases = Object.keys(methods).filter((method) => RELEASE_NAMES.has(method) && !(method === "end" && producer));
-		return { name, typeRef, methods, properties, events, releases };
+		const releases = Object.keys(methods).filter(
+			(method) => isRelease(method, methods[method] ?? []) && !(method === "end" && producer),
+		);
+		return {
+			name,
+			typeRef,
+			methods,
+			...(optionalMethods.length === 0 ? {} : { optional: optionalMethods }),
+			properties,
+			events,
+			releases,
+		};
 	}
 
 	/** A signature with its traits; a handle it produces is queued for reading. */
@@ -202,11 +279,16 @@ class SurfaceReader {
 		const parameters = declared.map((parameter, index) => {
 			const type = checker.getTypeOfSymbol(parameter);
 			// Optionality is on the declaration (`?`, a default value), not on the parameter's symbol.
-			const node = parameter.valueDeclaration?.resolve() as { readonly questionToken?: unknown; readonly initializer?: unknown } | undefined;
+			const node = parameter.valueDeclaration?.resolve() as
+				| { readonly questionToken?: unknown; readonly initializer?: unknown }
+				| undefined;
 			return {
 				name: parameter.name,
 				type: type === undefined ? "unknown" : this.print(type),
-				optional: node?.questionToken !== undefined || node?.initializer !== undefined || (parameter.flags & SymbolFlags.Optional) !== 0,
+				optional:
+					node?.questionToken !== undefined ||
+					node?.initializer !== undefined ||
+					(parameter.flags & SymbolFlags.Optional) !== 0,
 				rest: signature.hasRestParameter && index === declared.length - 1,
 			};
 		});
@@ -219,10 +301,15 @@ class SurfaceReader {
 		const resolved = returnType === undefined ? undefined : this.promised(returnType);
 		const produced = resolved ?? returnType;
 		const handle = produced === undefined ? undefined : this.handleOf(produced, `Awaited<ReturnType<${via}>>`, depth);
+		const choices =
+			handle === undefined && produced !== undefined
+				? (this.chosenHandles(this.conditionalIn(produced), depth) ?? [])
+				: [];
 		// A promise first; then a handle, even an iterable one (sharp's `Sharp` is a Duplex); then an iterable.
 		if (resolved !== undefined) traits.push("async");
 		else if (returns === "this") traits.push("returns-this");
-		else if (handle === undefined && returnType !== undefined && this.isAsyncIterable(returnType)) traits.push("stream");
+		else if (handle === undefined && returnType !== undefined && this.isAsyncIterable(returnType))
+			traits.push("stream");
 		else if (returns === "void" && this.lastIsFunction(signature)) traits.push("callback");
 		else traits.push("sync");
 		return {
@@ -233,25 +320,90 @@ class SurfaceReader {
 			returns,
 			...(resolved === undefined ? {} : { resolves: this.print(resolved) }),
 			...(handle === undefined ? {} : { handle }),
+			...(choices.length === 0 ? {} : { handles: choices }),
+			...(this.givesReceiver(signature) ? { receiver: true } : {}),
 			...(signal === undefined ? {} : { signal }),
 			traits,
 		};
 	}
 
 	/**
+	 * Whether upstream declares a signature's result `this`, or a promise of it (`Signature.receiver`). Read on the
+	 * declared signature, which a generic handle's or a subclass's instantiates with the handle's own type for `this`.
+	 */
+	private givesReceiver(signature: TsSignature): boolean {
+		let declared = signature;
+		for (let target = signature.getTarget(); target !== undefined; target = target.getTarget()) declared = target;
+		const returned = this.checker.getReturnTypeOfSignature(declared);
+		const value = returned === undefined ? undefined : (this.promised(returned) ?? returned);
+		return value !== undefined && value.isTypeParameter() && value.isThisType === true;
+	}
+
+	/**
+	 * The handles a conditional type is in every branch the call's type arguments may choose (puppeteer's `HandleFor<T>`:
+	 * `ElementHandle<T>` for a DOM node, else `JSHandle<T>`), sorted, a nested conditional's branches its own and a
+	 * `never` branch none; undefined for no conditional, or one with a branch that is no exported handle (a value the
+	 * facade could not tell from a handle at run time).
+	 */
+	private chosenHandles(type: Type, depth: number): ReadonlyArray<string> | undefined {
+		if (!type.isConditionalType()) return undefined;
+		const found = new Set<string>();
+		for (const branch of [type.getTrueType(), type.getFalseType()]) {
+			if ((branch.flags & TypeFlags.Never) !== 0) continue;
+			// The check type narrowed in its true branch (bullmq's `T extends Job<any> ? T : Job<T>`) is what it was narrowed to.
+			const narrowed = branch.isSubstitutionType() ? branch.getConstraint() : branch;
+			const nested = narrowed.isConditionalType() ? this.chosenHandles(narrowed, depth) : undefined;
+			const symbol = narrowed.getSymbol();
+			const handle =
+				nested !== undefined || symbol === undefined || !this.exported.has(symbol.name)
+					? undefined
+					: this.handleOf(narrowed, `Upstream.${symbol.name}`, depth);
+			const handles = nested ?? (handle === undefined ? undefined : [handle]);
+			if (handles === undefined) return undefined;
+			for (const name of handles) found.add(name);
+		}
+		return found.size === 0 ? undefined : [...found].sort();
+	}
+
+	/**
+	 * Where a result may hold a conditional of handles: the result itself, the one member of a union beside `null` and
+	 * `undefined` (bullmq's `JobBase<T> | undefined`), or an array's items (`JobBase<T>[]`), as the generator reads the
+	 * result's text to tell them apart.
+	 */
+	private conditionalIn(type: Type): Type {
+		if (type.isUnionType()) {
+			const present = (type.getTypes() ?? []).filter(
+				(member) => (member.flags & (TypeFlags.Null | TypeFlags.Undefined | TypeFlags.Void)) === 0,
+			);
+			return present.length === 1 && present[0] !== undefined ? present[0] : type;
+		}
+		const symbol = type.getSymbol();
+		if ((symbol?.name === "Array" || symbol?.name === "ReadonlyArray") && type.isTypeReference())
+			return this.checker.getTypeArguments(type as TypeReference)[0] ?? type;
+		return type;
+	}
+
+	/**
 	 * Where a signature takes its `AbortSignal`: a parameter typed `AbortSignal` (optional or not), or the `signal`
 	 * field of an options-object parameter (`{ signal?: AbortSignal }`). A rest parameter is never one.
 	 */
-	private signalSlot(parameters: ReadonlyArray<TsSymbol>, hasRest: boolean): { readonly index: number; readonly property?: string } | undefined {
+	private signalSlot(
+		parameters: ReadonlyArray<TsSymbol>,
+		hasRest: boolean,
+	): { readonly index: number; readonly property?: string } | undefined {
 		for (const [index, parameter] of parameters.entries()) {
 			if (hasRest && index === parameters.length - 1) break;
 			const type = this.checker.getTypeOfSymbol(parameter);
 			if (type === undefined) continue;
 			const present = this.checker.getNonNullableType(type) ?? type;
 			if (this.isAbortSignal(present)) return { index };
-			const field = present.isUnionType() || (present.flags & TypeFlags.Object) === 0 ? undefined : this.checker.getPropertyOfType(present, "signal");
+			const field =
+				present.isUnionType() || (present.flags & TypeFlags.Object) === 0
+					? undefined
+					: this.checker.getPropertyOfType(present, "signal");
 			const fieldType = field === undefined ? undefined : this.checker.getTypeOfSymbol(field);
-			if (fieldType !== undefined && this.isAbortSignal(this.checker.getNonNullableType(fieldType) ?? fieldType)) return { index, property: "signal" };
+			if (fieldType !== undefined && this.isAbortSignal(this.checker.getNonNullableType(fieldType) ?? fieldType))
+				return { index, property: "signal" };
 		}
 		return undefined;
 	}
@@ -271,11 +423,15 @@ class SurfaceReader {
 		}
 		const then = this.checker.getPropertyOfType(type, "then");
 		const thenType = then === undefined ? undefined : this.checker.getTypeOfSymbol(then);
-		const thenSignature = thenType === undefined ? undefined : this.checker.getSignaturesOfType(thenType, SignatureKind.Call)[0];
+		const thenSignature =
+			thenType === undefined ? undefined : this.checker.getSignaturesOfType(thenType, SignatureKind.Call)[0];
 		const onFulfilled = thenSignature?.getParameters()[0];
 		const onFulfilledType = onFulfilled === undefined ? undefined : this.checker.getTypeOfSymbol(onFulfilled);
 		if (onFulfilledType === undefined) return undefined;
-		const callback = this.checker.getSignaturesOfType(this.checker.getNonNullableType(onFulfilledType) ?? onFulfilledType, SignatureKind.Call)[0];
+		const callback = this.checker.getSignaturesOfType(
+			this.checker.getNonNullableType(onFulfilledType) ?? onFulfilledType,
+			SignatureKind.Call,
+		)[0];
 		const value = callback?.getParameters()[0];
 		return value === undefined ? undefined : this.checker.getTypeOfSymbol(value);
 	}
@@ -285,7 +441,9 @@ class SurfaceReader {
 	 * package-relative, so a surface names no directory of the machine that read it and drift compares like for like.
 	 */
 	private print(type: Type): string {
-		return this.checker.typeToString(type, undefined, NO_TRUNCATION).replace(/import\("[^"]*\/node_modules\//g, 'import("');
+		return this.checker
+			.typeToString(type, undefined, NO_TRUNCATION)
+			.replace(/import\("[^"]*\/node_modules\//g, 'import("');
 	}
 
 	/**
@@ -295,7 +453,12 @@ class SurfaceReader {
 	private typeParameterList(signature: TsSignature): string | undefined {
 		let printed = "";
 		try {
-			const node = this.checker.signatureToSignatureDeclaration(signature, SyntaxKind.MethodSignature, undefined, NodeBuilderFlags.NoTruncation);
+			const node = this.checker.signatureToSignatureDeclaration(
+				signature,
+				SyntaxKind.MethodSignature,
+				undefined,
+				NodeBuilderFlags.NoTruncation,
+			);
 			printed = node === undefined ? "" : this.emitter.printNode(node).replace(/\s+/g, " ").trim();
 		} catch {
 			// The unstable API's client fails to decode some printed nodes ("Offset is outside the bounds of the
@@ -325,7 +488,10 @@ class SurfaceReader {
 	private lastIsFunction(signature: TsSignature): boolean {
 		const last = signature.getParameters().at(-1);
 		const type = last === undefined ? undefined : this.checker.getTypeOfSymbol(last);
-		return type !== undefined && this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call).length > 0;
+		return (
+			type !== undefined &&
+			this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call).length > 0
+		);
 	}
 
 	/**
@@ -335,14 +501,22 @@ class SurfaceReader {
 	private callbackKind(signature: TsSignature): "node" | "done" | "handler" {
 		const last = signature.getParameters().at(-1);
 		const type = last === undefined ? undefined : this.checker.getTypeOfSymbol(last);
-		const called = type === undefined ? undefined : this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call)[0];
+		const called =
+			type === undefined
+				? undefined
+				: this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call)[0];
 		const parameters = called?.getParameters() ?? [];
 		const first = parameters[0];
 		const firstType = first === undefined ? undefined : this.checker.getTypeOfSymbol(first);
-		if (first !== undefined && (/^(err|error|e|ex)$/i.test(first.name) || (firstType !== undefined && /\bError\b/.test(this.print(firstType))))) {
+		if (
+			first !== undefined &&
+			(/^(err|error|e|ex)$/i.test(first.name) ||
+				(firstType !== undefined && /\bError\b/.test(this.print(firstType))))
+		) {
 			return "node";
 		}
-		if (parameters.length === 0 && /^(callback|cb|done|next|complete|oncomplete|ondone)$/i.test(last?.name ?? "")) return "done";
+		if (parameters.length === 0 && /^(callback|cb|done|next|complete|oncomplete|ondone)$/i.test(last?.name ?? ""))
+			return "done";
 		return "handler";
 	}
 
@@ -357,8 +531,17 @@ class SurfaceReader {
 		if (this.isError(type)) return undefined;
 		const hasMethod = this.checker
 			.getPropertiesOfType(type)
-			.some((property) => this.checker.getSignaturesOfType(this.checker.getTypeOfSymbol(property) ?? type, SignatureKind.Call).length > 0);
+			.some(
+				(property) =>
+					this.checker.getSignaturesOfType(this.checker.getTypeOfSymbol(property) ?? type, SignatureKind.Call)
+						.length > 0,
+			);
 		if (!hasMethod) return undefined;
+		// A handle is known by its type's name, so one name is one type: another type of a name already read (the
+		// compiler's `ts.ClassDeclaration`, ts-morph's `compilerNode`, beside ts-morph's own `ClassDeclaration`) is none.
+		const known = this.symbols.get(symbol.name);
+		if (known !== undefined && known !== symbol.id) return undefined;
+		this.symbols.set(symbol.name, symbol.id);
 		const typeRef = this.exported.has(symbol.name) ? `Upstream.${symbol.name}${this.anyArguments(type)}` : via;
 		this.enqueue(type, symbol.name, typeRef, depth);
 		return symbol.name;
@@ -368,7 +551,8 @@ class SurfaceReader {
 	private anyArguments(type: Type): string {
 		const declared = type.getSymbol();
 		const declaredType = declared === undefined ? undefined : this.checker.getDeclaredTypeOfSymbol(declared);
-		const parameters = declaredType !== undefined && declaredType.isClassOrInterface() ? declaredType.getTypeParameters() : [];
+		const parameters =
+			declaredType !== undefined && declaredType.isClassOrInterface() ? declaredType.getTypeParameters() : [];
 		return parameters.length === 0 ? "" : `<${parameters.map(() => "any").join(", ")}>`;
 	}
 
@@ -380,7 +564,8 @@ class SurfaceReader {
 	private baseClass(instance: Type): string | undefined {
 		const declared = instance.getSymbol();
 		const type = declared === undefined ? undefined : this.checker.getDeclaredTypeOfSymbol(declared);
-		const base = type !== undefined && type.isClassOrInterface() ? this.checker.getBaseTypes(type)[0]?.getSymbol() : undefined;
+		const base =
+			type !== undefined && type.isClassOrInterface() ? this.checker.getBaseTypes(type)[0]?.getSymbol() : undefined;
 		return base !== undefined && this.isTargetDeclaration(base) ? base.name : undefined;
 	}
 
@@ -388,15 +573,30 @@ class SurfaceReader {
 	 * The public fields an error class declares beyond `Error`'s own, that are no functions: what a program reads off
 	 * the failure (a status, a body, a numeric code).
 	 */
-	private errorFields(instance: Type): ReadonlyArray<{ readonly name: string; readonly type: string; readonly optional: boolean }> {
+	private errorFields(
+		instance: Type,
+	): ReadonlyArray<{ readonly name: string; readonly type: string; readonly optional: boolean }> {
 		return this.checker
 			.getPropertiesOfType(instance)
-			.filter((property) => !ERROR_OWN.has(property.name) && !property.name.startsWith("_") && !property.name.startsWith("#") && !property.name.startsWith("__@"))
+			.filter(
+				(property) =>
+					!ERROR_OWN.has(property.name) &&
+					!property.name.startsWith("_") &&
+					!property.name.startsWith("#") &&
+					!property.name.startsWith("__@"),
+			)
 			.filter((property) => this.isTargetDeclaration(property) && this.isPublic(property))
 			.flatMap((property) => {
 				const type = this.checker.getTypeOfSymbol(property);
-				if (type === undefined || this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call).length > 0) return [];
-				return [{ name: property.name, type: this.print(type), optional: (property.flags & SymbolFlags.Optional) !== 0 }];
+				if (
+					type === undefined ||
+					this.checker.getSignaturesOfType(this.checker.getNonNullableType(type) ?? type, SignatureKind.Call)
+						.length > 0
+				)
+					return [];
+				return [
+					{ name: property.name, type: this.print(type), optional: (property.flags & SymbolFlags.Optional) !== 0 },
+				];
 			})
 			.sort((a, b) => a.name.localeCompare(b.name));
 	}
@@ -405,12 +605,21 @@ class SurfaceReader {
 	private readStatics(classType: Type, reference: string): Record<string, ReadonlyArray<Signature>> {
 		const statics: Record<string, ReadonlyArray<Signature>> = {};
 		for (const property of this.checker.getPropertiesOfType(classType)) {
-			if (property.name === "prototype" || property.name.startsWith("_") || property.name.startsWith("#") || property.name.startsWith("__@")) continue;
+			if (
+				property.name === "prototype" ||
+				property.name.startsWith("_") ||
+				property.name.startsWith("#") ||
+				property.name.startsWith("__@")
+			)
+				continue;
 			if (!this.isTargetDeclaration(property) || !this.isPublic(property)) continue;
 			const propertyType = this.checker.getTypeOfSymbol(property);
-			const signatures = propertyType === undefined ? [] : this.checker.getSignaturesOfType(propertyType, SignatureKind.Call);
+			const signatures =
+				propertyType === undefined ? [] : this.checker.getSignaturesOfType(propertyType, SignatureKind.Call);
 			if (signatures.length === 0) continue;
-			statics[property.name] = signatures.map((signature) => this.readSignature(signature, `${reference}[${JSON.stringify(property.name)}]`, 0));
+			statics[property.name] = signatures.map((signature) =>
+				this.readSignature(signature, `${reference}[${JSON.stringify(property.name)}]`, 0),
+			);
 		}
 		return statics;
 	}
@@ -421,12 +630,17 @@ class SurfaceReader {
 
 	/** Whether a declaration has no `private` or `protected` modifier; one without a declaration (implicit) is public. */
 	private isPublicNode(declaration: NodeHandle | undefined): boolean {
-		return !this.hasModifier(declaration, SyntaxKind.PrivateKeyword) && !this.hasModifier(declaration, SyntaxKind.ProtectedKeyword);
+		return (
+			!this.hasModifier(declaration, SyntaxKind.PrivateKeyword) &&
+			!this.hasModifier(declaration, SyntaxKind.ProtectedKeyword)
+		);
 	}
 
 	private hasModifier(declaration: NodeHandle | undefined, kind: SyntaxKind): boolean {
 		// A resolved declaration is a class, a class member or a signature; only the first two carry `modifiers`.
-		const node = declaration?.resolve() as { readonly modifiers?: ReadonlyArray<{ readonly kind: SyntaxKind }> } | undefined;
+		const node = declaration?.resolve() as
+			| { readonly modifiers?: ReadonlyArray<{ readonly kind: SyntaxKind }> }
+			| undefined;
 		return (node?.modifiers ?? []).some((modifier) => modifier.kind === kind);
 	}
 

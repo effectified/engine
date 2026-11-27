@@ -34,7 +34,7 @@
 			"kind": "value",
 			"name": "AutofillAddressField",
 			"type": "typeof AutofillAddressField",
-			"constEnum": true
+			"erased": "declarations"
 		},
 		{
 			"kind": "class",
@@ -56,13 +56,13 @@
 			"kind": "value",
 			"name": "BrowserContextEvent",
 			"type": "typeof BrowserContextEvent",
-			"constEnum": true
+			"erased": "declarations"
 		},
 		{
 			"kind": "value",
 			"name": "BrowserEvent",
 			"type": "typeof BrowserEvent",
-			"constEnum": true
+			"erased": "declarations"
 		},
 		{
 			"kind": "class",
@@ -610,7 +610,7 @@
 			"kind": "value",
 			"name": "PageEvent",
 			"type": "typeof PageEvent",
-			"constEnum": true
+			"erased": "declarations"
 		},
 		{
 			"kind": "value",
@@ -620,7 +620,8 @@
 		{
 			"kind": "value",
 			"name": "Protocol",
-			"type": "typeof Protocol"
+			"type": "typeof Protocol",
+			"erased": "declarations"
 		},
 		{
 			"kind": "class",
@@ -962,7 +963,8 @@
 		{
 			"kind": "value",
 			"name": "Session",
-			"type": "typeof Session"
+			"type": "typeof Session",
+			"erased": "runtime"
 		},
 		{
 			"kind": "class",
@@ -3310,6 +3312,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<ElementFor<K>>>",
 						"resolves": "HandleFor<ElementFor<K>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -3823,6 +3829,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -3842,6 +3852,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<ElementType[K]>>",
 						"resolves": "HandleFor<ElementType[K]>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -4340,6 +4354,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -4568,6 +4586,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"signal": {
 							"index": 1,
 							"property": "signal"
@@ -5663,6 +5685,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -5682,6 +5708,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<T[K]>>",
 						"resolves": "HandleFor<T[K]>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -6013,6 +6043,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<T>>",
 						"resolves": "HandleFor<T>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"signal": {
 							"index": 0,
 							"property": "signal"
@@ -6995,6 +7029,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -8280,6 +8318,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"signal": {
 							"index": 1,
 							"property": "signal"
@@ -8826,6 +8868,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -8882,6 +8928,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"signal": {
 							"index": 1,
 							"property": "signal"
@@ -9777,6 +9827,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"traits": [
 							"async"
 						]
@@ -9808,6 +9862,10 @@
 						"trailingCallback": false,
 						"returns": "Promise<HandleFor<Awaited<ReturnType<Func>>>>",
 						"resolves": "HandleFor<Awaited<ReturnType<Func>>>",
+						"handles": [
+							"ElementHandle",
+							"JSHandle"
+						],
 						"signal": {
 							"index": 1,
 							"property": "signal"
@@ -10252,5 +10310,6 @@
 		"WorkAreaInsets",
 		"WritableDestination",
 		"WsOptions"
-	]
+	],
+	"runtime": "imported"
 }

@@ -3,6 +3,7 @@
 // an editor, a map) gets mounts (`instanceMount`), written by agents under src/mounts. Its tests run a real Effect UI
 // app in Chrome: a generated harness serves fixtures with Vite and drives them through @effectified/puppeteer-core.
 
+import { EFFECT_PLUGIN } from "./diagnostics.ts";
 import type { Element } from "./elements.ts";
 import { description, facadeVersion, type Recipe } from "./recipe.ts";
 import type { Surface } from "./surface.ts";
@@ -19,16 +20,22 @@ const UI_TOOLCHAIN = {
 	vitest: "5.1.1",
 	"@effect/vitest": "4.1.5",
 	vite: "8.3.8",
-	"@effectified/puppeteer-core": "https://github.com/effectified/engine/releases/download/puppeteer-core-v25.19.0+2/effectified-puppeteer-core-25.19.0+2.tgz",
+	"@effectified/puppeteer-core":
+		"https://github.com/effectified/engine/releases/download/puppeteer-core-v25.19.0+2/effectified-puppeteer-core-25.19.0+2.tgz",
 } as const;
 
 /** The files of a frontend facade, by path relative to the package, given the runtime's source. */
-export function uiFiles(surface: Surface, recipe: Recipe, header: (what: string) => string, runtime: string): ReadonlyMap<string, string> {
+export function uiFiles(
+	surface: Surface,
+	recipe: Recipe,
+	header: (what: string) => string,
+	runtime: string,
+): ReadonlyMap<string, string> {
 	const ui = recipe.ui;
 	if (ui === undefined) return new Map();
 	const elements = boundElements(surface, recipe);
 	const files = new Map<string, string>([
-		["package.json", packageJson(recipe, ui.effectUi)],
+		["package.json", packageJson(recipe, ui.effectUi, elements)],
 		["tsconfig.json", TSCONFIG],
 		["tsconfig.build.json", TSCONFIG_BUILD],
 		["src/internal/ui.ts", `${header("the Effect UI runtime of @effectified/engine, copied verbatim")}${runtime}`],
@@ -89,17 +96,27 @@ function elementSource(element: Element, recipe: Recipe, header: (what: string) 
 		untyped
 			? "// Upstream's types do not name this element in HTMLElementTagNameMap: its properties are typed unknown."
 			: `/** The upstream element's type, which types the binding's properties. */`,
-		untyped ? "type Of = Record<string, unknown>;" : `type Of = HTMLElementTagNameMap[${tag}]; // element: ${element.tag}`,
+		untyped
+			? "type Of = Record<string, unknown>;"
+			: `type Of = HTMLElementTagNameMap[${tag}]; // element: ${element.tag}`,
 		"",
 		`/** The properties a view sets on \`<${element.tag}>\`, as upstream types them. */`,
 		`type Properties = {${properties.length === 0 ? "};" : ""}`,
 		...(properties.length === 0
 			? []
-			: [...properties.map((property) => `\treadonly ${memberName(property)}: Schema.declare<${propertyType(property)}>; // property: ${element.tag}.${property}`), "};"]),
+			: [
+					...properties.map(
+						(property) =>
+							`\treadonly ${memberName(property)}: Schema.declare<${propertyType(property)}>; // property: ${element.tag}.${property}`,
+					),
+					"};",
+				]),
 		"",
 		`/** The custom events of \`<${element.tag}>\`, each its \`detail\`. */`,
 		`type Events = {${events.length === 0 ? "};" : ""}`,
-		...(events.length === 0 ? [] : [...events.map((event) => `\treadonly ${memberName(event)}: Schema.declare<${eventType(event)}>;`), "};"]),
+		...(events.length === 0
+			? []
+			: [...events.map((event) => `\treadonly ${memberName(event)}: Schema.declare<${eventType(event)}>;`), "};"]),
 		"",
 		`/** \`<${element.tag}>\`${element.description === "" ? "" : `: ${element.description.replace(/\*\//g, "* /")}`} */`,
 		`export const ${element.name}: Html.CustomElementBinding<${tag}, Properties, Events> = Html.customElement({`,
@@ -107,9 +124,17 @@ function elementSource(element: Element, recipe: Recipe, header: (what: string) 
 		`\tproperties: {${properties.length === 0 ? "}," : ""}`,
 		...(properties.length === 0
 			? []
-			: [...properties.map((property) => `\t\t${memberName(property)}: typed<${propertyType(property)}>(), // property: ${element.tag}.${property}`), "\t},"]),
+			: [
+					...properties.map(
+						(property) =>
+							`\t\t${memberName(property)}: typed<${propertyType(property)}>(), // property: ${element.tag}.${property}`,
+					),
+					"\t},",
+				]),
 		`\tevents: {${events.length === 0 ? "}," : ""}`,
-		...(events.length === 0 ? [] : [...events.map((event) => `\t\t${memberName(event)}: typed<${eventType(event)}>(),`), "\t},"]),
+		...(events.length === 0
+			? []
+			: [...events.map((event) => `\t\t${memberName(event)}: typed<${eventType(event)}>(),`), "\t},"]),
 		"});",
 		...changesSource(element, properties),
 		"",
@@ -129,7 +154,9 @@ export function boundProperties(element: Element, recipe: Recipe): ReadonlyArray
 /** The custom events an element's binding carries: not DOM events, less the recipe's `<tag>@<event>` excludes. */
 export function boundEvents(element: Element, recipe: Recipe): ReadonlyArray<string> {
 	// `<tag>@<event>`: an event and a property may share a name (`md-dialog`'s `open`).
-	return element.events.filter((event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude");
+	return element.events.filter(
+		(event) => !DOM_EVENTS.has(event) && recipe.methods[`${element.tag}@${event}`] !== "exclude",
+	);
 }
 
 /** The state a form control's changes mount reports; none when the element is no form control. */
@@ -155,7 +182,11 @@ function changesSource(element: Element, properties: ReadonlyArray<string>): Rea
 	];
 }
 
-function indexSource(elements: ReadonlyArray<Element>, mounts: ReadonlyArray<string>, header: (what: string) => string): string {
+function indexSource(
+	elements: ReadonlyArray<Element>,
+	mounts: ReadonlyArray<string>,
+	header: (what: string) => string,
+): string {
 	return [
 		header("the index of the Effect UI facade").trimEnd(),
 		...elements.map((element) => `export * from "./elements/${element.name}.ts";`),
@@ -176,12 +207,14 @@ function elementsFixture(elements: ReadonlyArray<Element>, header: (what: string
 		"",
 		"const Message = UiSchema.TaggedEnum({ Rendered: {} });",
 		"",
-		"const Elements = Html.component({ name: \"Elements\", model: Schema.Struct({ rendered: Schema.Boolean }), message: Message }).make({",
+		'const Elements = Html.component({ name: "Elements", model: Schema.Struct({ rendered: Schema.Boolean }), message: Message }).make({',
 		"\tinit: () => ({ rendered: true }),",
 		"\tupdate: { Rendered: ($) => $.evolve({ rendered: () => true }) },",
 		"\tview: (h) =>",
 		"\t\th.div.children(",
-		...elements.map((element) => `\t\t\tFacade.${element.name}(h).attr("data-effectified", ${JSON.stringify(element.tag)}),`),
+		...elements.map(
+			(element) => `\t\t\tFacade.${element.name}(h).attr("data-effectified", ${JSON.stringify(element.tag)}),`,
+		),
 		"\t\t),",
 		"});",
 		"",
@@ -194,24 +227,25 @@ function elementsTest(elements: ReadonlyArray<Element>, header: (what: string) =
 	return [
 		header("the smoke test of every element; behaviour tests are written next to it").trimEnd(),
 		`import { describe, expect, it } from "@effect/vitest";`,
-		`import { Effect } from "effect";`,
+		`import { Effect, Schema } from "effect";`,
 		`import { chrome, fixture } from "./support/browser.ts";`,
 		"",
 		`const tags = ${JSON.stringify(elements.map((element) => element.tag))};`,
+		"",
+		"/** What the page reports of each rendered element, as JSON: the page's result crosses the browser boundary as data. */",
+		"const Rendered = Schema.fromJsonString(Schema.Array(Schema.Struct({ tag: Schema.String, defined: Schema.Boolean })));",
 		"",
 		`describe.skipIf(chrome === undefined)("elements", () => {`,
 		`\tit.effect("renders every element through Effect UI, each one defined by its upstream module", () =>`,
 		"\t\tEffect.scoped(",
 		"\t\t\tEffect.gen(function* () {",
 		`\t\t\t\tconst { page } = yield* fixture("elements");`,
-		"\t\t\t\tyield* page.waitForFunction((count) => document.querySelectorAll(\"[data-effectified]\").length === count, {}, tags.length);",
-		"\t\t\t\t// Read as JSON: the page's result crosses the browser boundary as data.",
-		"\t\t\t\tconst rendered: ReadonlyArray<{ readonly tag: string; readonly defined: boolean }> = JSON.parse(",
-		"\t\t\t\t\tString(",
-		"\t\t\t\t\t\tyield* page.evaluate(() =>",
-		"\t\t\t\t\t\t\tJSON.stringify(",
-		"\t\t\t\t\t\t\t\t[...document.querySelectorAll(\"[data-effectified]\")].map((node) => ({ tag: node.localName, defined: customElements.get(node.localName) !== undefined })),",
-		"\t\t\t\t\t\t\t),",
+		'\t\t\t\tyield* page.waitForFunction((count) => document.querySelectorAll("[data-effectified]").length === count, {}, tags.length);',
+		"\t\t\t\tconst rendered = yield* Schema.decodeUnknownEffect(Rendered)(",
+		"\t\t\t\t\tyield* page.evaluate(() =>",
+		"\t\t\t\t\t\t// Runs in the page: it serializes what it found for the decoder above.",
+		"\t\t\t\t\t\tJSON.stringify(",
+		'\t\t\t\t\t\t\t[...document.querySelectorAll("[data-effectified]")].map((node) => ({ tag: node.localName, defined: customElements.get(node.localName) !== undefined })),',
 		"\t\t\t\t\t\t),",
 		"\t\t\t\t\t),",
 		"\t\t\t\t);",
@@ -311,8 +345,12 @@ export const fixture = Effect.fn("fixture")(function* (name: string) {
 });
 `;
 
-function packageJson(recipe: Recipe, effectUi: string): string {
-	const dependencies: Record<string, string> = { ...recipe.typeDependencies, [recipe.package]: recipe.version, ...recipe.ui?.dependencies };
+function packageJson(recipe: Recipe, effectUi: string, elements: ReadonlyArray<Element>): string {
+	const dependencies: Record<string, string> = {
+		...recipe.typeDependencies,
+		[recipe.package]: recipe.version,
+		...recipe.ui?.dependencies,
+	};
 	if (recipe.types.from === "definitely-typed") dependencies[recipe.types.package] = recipe.types.version;
 	const effectUiUrl = `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${effectUi}`;
 	return `${JSON.stringify(
@@ -322,13 +360,22 @@ function packageJson(recipe: Recipe, effectUi: string): string {
 			description: description(recipe),
 			type: "module",
 			license: "MIT",
+			// `./elements/*` only for a facade with element bindings: a wildcard no file matches promises entry points
+			// the release lacks (chart.js and CodeMirror offer mounts only).
 			exports: {
 				".": { types: "./dist/index.d.ts", import: "./dist/index.js" },
-				"./elements/*": { types: "./dist/elements/*.d.ts", import: "./dist/elements/*.js" },
+				...(elements.length === 0
+					? {}
+					: { "./elements/*": { types: "./dist/elements/*.d.ts", import: "./dist/elements/*.js" } }),
 			},
 			files: ["dist", "README.md", "SKILL.md"],
-			sideEffects: ["./dist/elements/*.js", "./dist/index.js"],
-			scripts: { build: "tsc -p tsconfig.build.json", check: "tsc -p tsconfig.json", test: "vitest --run --passWithNoTests --testTimeout=60000", demo: "node test/support/demo.ts" },
+			sideEffects: elements.length === 0 ? ["./dist/index.js"] : ["./dist/elements/*.js", "./dist/index.js"],
+			scripts: {
+				build: "tsc -p tsconfig.build.json",
+				check: "tsc -p tsconfig.json",
+				test: "vitest --run --passWithNoTests --testTimeout=60000",
+				demo: "node test/support/demo.ts",
+			},
 			dependencies,
 			peerDependencies: { "@effect/ui": "*", effect: `~${UI_TOOLCHAIN.effect}` },
 			devDependencies: Object.fromEntries(
@@ -369,6 +416,7 @@ const TSCONFIG = `${JSON.stringify(
 			// A mount imports its library's stylesheet for its side effect (xterm.css): the bundler handles it.
 			noUncheckedSideEffectImports: false,
 			noEmit: true,
+			plugins: [EFFECT_PLUGIN],
 		},
 		include: ["src", "test"],
 	},
@@ -377,7 +425,11 @@ const TSCONFIG = `${JSON.stringify(
 )}\n`;
 
 const TSCONFIG_BUILD = `${JSON.stringify(
-	{ extends: "./tsconfig.json", compilerOptions: { noEmit: false, outDir: "dist", rootDir: "src", declaration: true }, include: ["src"] },
+	{
+		extends: "./tsconfig.json",
+		compilerOptions: { noEmit: false, outDir: "dist", rootDir: "src", declaration: true },
+		include: ["src"],
+	},
 	null,
 	2,
 )}\n`;

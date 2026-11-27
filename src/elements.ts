@@ -24,8 +24,13 @@ export type Element = typeof Element.Type;
 export const manifestPath = Effect.fn("manifestPath")(function* (workspace: Workspace) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const manifest: unknown = JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json")));
-	const field = typeof manifest === "object" && manifest !== null ? (manifest as { customElements?: unknown }).customElements : undefined;
+	const manifest: unknown = JSON.parse(
+		yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json")),
+	);
+	const field =
+		typeof manifest === "object" && manifest !== null
+			? (manifest as { customElements?: unknown }).customElements
+			: undefined;
 	return typeof field === "string" ? field.replace(/^\.\//, "") : undefined;
 });
 
@@ -41,13 +46,17 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 	const path = yield* Path.Path;
 	// Trust boundary: the manifest and package.json are files other tools wrote; only the fields read below are relied on.
 	const document: unknown = JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, manifest)));
-	const packageExports = field(JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json"))), "exports");
+	const packageExports = field(
+		JSON.parse(yield* fs.readFileString(path.join(workspace.packageDirectory, "package.json"))),
+		"exports",
+	);
 	const modules = asArray(field(document, "modules"));
 	const definitions = new Map<string, string>();
 	const classes = new Map<string, unknown>();
 	for (const module of modules) {
 		for (const exported of asArray(field(module, "exports"))) {
-			if (field(exported, "kind") === "custom-element-definition") definitions.set(String(field(exported, "name")), String(field(module, "path")));
+			if (field(exported, "kind") === "custom-element-definition")
+				definitions.set(String(field(exported, "name")), String(field(module, "path")));
 		}
 		for (const declaration of asArray(field(module, "declarations"))) {
 			classes.set(`${String(field(module, "path"))}#${String(field(declaration, "name"))}`, declaration);
@@ -74,7 +83,8 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 			const members = new Map<string, boolean>();
 			for (const member of chain.flatMap((link) => asArray(field(link, "members")))) {
 				const name = String(field(member, "name"));
-				const api = field(member, "attribute") !== undefined || String(field(member, "description") ?? "").trim() !== "";
+				const api =
+					field(member, "attribute") !== undefined || String(field(member, "description") ?? "").trim() !== "";
 				members.set(name, (members.get(name) ?? false) || api);
 			}
 			documented.set(tag, members);
@@ -82,15 +92,29 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
 				tag,
 				name: "",
 				definition: yield* definitionImport(workspace, packageExports, manifestDirectory, modulePath),
-				properties: settableProperties(chain.flatMap((link) => asArray(field(link, "members"))), elementClasses),
-				events: [...new Set(chain.flatMap((link) => asArray(field(link, "events"))).map((event) => field(event, "name")).filter((name): name is string => typeof name === "string"))].sort(),
-				description: firstSentence(String(field(declaration, "summary") ?? field(declaration, "description") ?? "")),
+				properties: settableProperties(
+					chain.flatMap((link) => asArray(field(link, "members"))),
+					elementClasses,
+				),
+				events: [
+					...new Set(
+						chain
+							.flatMap((link) => asArray(field(link, "events")))
+							.map((event) => field(event, "name"))
+							.filter((name): name is string => typeof name === "string"),
+					),
+				].sort(),
+				description: firstSentence(
+					String(field(declaration, "summary") ?? field(declaration, "description") ?? ""),
+				),
 			});
 		}
 	}
 	const prefix = commonPrefix(elements.map((element) => element.tag));
 	return {
-		elements: elements.map((element) => ({ ...element, name: pascal(element.tag.slice(prefix.length)) })).sort((a, b) => a.tag.localeCompare(b.tag)),
+		elements: elements
+			.map((element) => ({ ...element, name: pascal(element.tag.slice(prefix.length)) }))
+			.sort((a, b) => a.tag.localeCompare(b.tag)),
 		documented: documented as Documented,
 	};
 });
@@ -100,7 +124,11 @@ export const readElements = Effect.fn("readElements")(function* (workspace: Work
  * element as a thin subclass (Material Web's `MdSwitch extends Switch`), and manifests rarely flatten what it
  * inherits. The walk stops at a class of another package (`LitElement`).
  */
-function ancestry(declaration: unknown, classes: ReadonlyMap<string, unknown>, ownPackage: string): ReadonlyArray<unknown> {
+function ancestry(
+	declaration: unknown,
+	classes: ReadonlyMap<string, unknown>,
+	ownPackage: string,
+): ReadonlyArray<unknown> {
 	const chain: Array<unknown> = [];
 	const pending: Array<unknown> = [declaration];
 	while (pending.length > 0 && chain.length < 32) {
@@ -131,7 +159,11 @@ const definitionImport = Effect.fn("definitionImport")(function* (
 ) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const shipped = [modulePath, modulePath.replace(/^src\//, "dist/").replace(/\.ts$/, ".js"), modulePath.replace(/\.ts$/, ".js")];
+	const shipped = [
+		modulePath,
+		modulePath.replace(/^src\//, "dist/").replace(/\.ts$/, ".js"),
+		modulePath.replace(/\.ts$/, ".js"),
+	];
 	const candidates = [manifestDirectory, "."]
 		.flatMap((base) => shipped.map((file) => path.normalize(path.join(base, file)).replace(/^\.\//, "")))
 		.filter((candidate, index, all) => all.indexOf(candidate) === index && !candidate.endsWith(".ts"));
@@ -139,7 +171,8 @@ const definitionImport = Effect.fn("definitionImport")(function* (
 		if (!(yield* fs.exists(path.join(workspace.packageDirectory, candidate)))) continue;
 		if (packageExports === undefined) return `${workspace.target.package}/${candidate}`;
 		const subpath = exportedSubpath(packageExports, candidate);
-		if (subpath !== undefined) return subpath === "." ? workspace.target.package : `${workspace.target.package}/${subpath.slice(2)}`;
+		if (subpath !== undefined)
+			return subpath === "." ? workspace.target.package : `${workspace.target.package}/${subpath.slice(2)}`;
 	}
 	// No file found, or none the package exports: importing the package itself defines its elements in most libraries.
 	return workspace.target.package;
@@ -147,7 +180,10 @@ const definitionImport = Effect.fn("definitionImport")(function* (
 
 /** The subpath of `exports` (`./switch/define.js`) that resolves to `file` (`dist/esm/switch/define.js`), if any. */
 function exportedSubpath(packageExports: unknown, file: string): string | undefined {
-	const entries = typeof packageExports === "string" ? [[".", packageExports] as const] : Object.entries(packageExports as Record<string, unknown>);
+	const entries =
+		typeof packageExports === "string"
+			? [[".", packageExports] as const]
+			: Object.entries(packageExports as Record<string, unknown>);
 	for (const [key, value] of entries) {
 		const target = exportTarget(value);
 		if (target === undefined) continue;
@@ -168,8 +204,17 @@ function resolveExport(entries: ReadonlyArray<readonly [string, unknown]>, subpa
 	if (exact !== undefined) return exportTarget(exact[1]);
 	const patterns = entries
 		.filter(([key]) => key.includes("*"))
-		.map(([key, value]) => ({ prefix: key.slice(0, key.indexOf("*")), suffix: key.slice(key.indexOf("*") + 1), value }))
-		.filter((pattern) => subpath.startsWith(pattern.prefix) && subpath.endsWith(pattern.suffix) && subpath.length >= pattern.prefix.length + pattern.suffix.length)
+		.map(([key, value]) => ({
+			prefix: key.slice(0, key.indexOf("*")),
+			suffix: key.slice(key.indexOf("*") + 1),
+			value,
+		}))
+		.filter(
+			(pattern) =>
+				subpath.startsWith(pattern.prefix) &&
+				subpath.endsWith(pattern.suffix) &&
+				subpath.length >= pattern.prefix.length + pattern.suffix.length,
+		)
 		.sort((a, b) => b.prefix.length - a.prefix.length);
 	const best = patterns[0];
 	if (best === undefined) return undefined;
@@ -197,7 +242,10 @@ function escapeRegExp(text: string): string {
  * another element of the library (a tab list's `activetab`), not a function (handlers stored as fields), not its
  * `ElementInternals`. `members` lists the element's own first, then what it inherits; the nearest declaration wins.
  */
-function settableProperties(members: ReadonlyArray<unknown>, elementClasses: ReadonlySet<string>): ReadonlyArray<string> {
+function settableProperties(
+	members: ReadonlyArray<unknown>,
+	elementClasses: ReadonlySet<string>,
+): ReadonlyArray<string> {
 	const seen = new Set<string>();
 	const settable: Array<string> = [];
 	for (const member of members) {
@@ -221,7 +269,12 @@ function settableProperties(members: ReadonlyArray<unknown>, elementClasses: Rea
 
 /** A description's first sentence, on one line. */
 function firstSentence(text: string): string {
-	return text.replace(/\s+/g, " ").trim().split(/(?<=[.!?])\s/)[0] ?? "";
+	return (
+		text
+			.replace(/\s+/g, " ")
+			.trim()
+			.split(/(?<=[.!?])\s/)[0] ?? ""
+	);
 }
 
 function field(value: unknown, key: string): unknown {

@@ -33,8 +33,10 @@ export function drift(before: Surface, after: Surface): Drift {
 	for (const name of [...handleNames].sort()) {
 		const old = before.handles[name];
 		const next = after.handles[name];
-		if (old === undefined && next !== undefined) changes.push({ kind: "added", path: `handle ${name}`, detail: `${Object.keys(next.methods).length} methods` });
-		else if (old !== undefined && next === undefined) changes.push({ kind: "removed", path: `handle ${name}`, detail: old.typeRef });
+		if (old === undefined && next !== undefined)
+			changes.push({ kind: "added", path: `handle ${name}`, detail: `${Object.keys(next.methods).length} methods` });
+		else if (old !== undefined && next === undefined)
+			changes.push({ kind: "removed", path: `handle ${name}`, detail: old.typeRef });
 		else if (old !== undefined && next !== undefined) compareHandle(changes, name, old, next);
 	}
 	return {
@@ -46,7 +48,13 @@ export function drift(before: Surface, after: Surface): Drift {
 }
 
 function compareHandle(changes: Array<Change>, name: string, before: Handle, after: Handle): void {
-	compareKeyed(changes, `${name}.`, new Map(Object.entries(before.methods)), new Map(Object.entries(after.methods)), describeSignatures);
+	compareKeyed(
+		changes,
+		`${name}.`,
+		new Map(Object.entries(before.methods)),
+		new Map(Object.entries(after.methods)),
+		describeSignatures,
+	);
 	compareKeyed(
 		changes,
 		`${name}.`,
@@ -56,8 +64,10 @@ function compareHandle(changes: Array<Change>, name: string, before: Handle, aft
 	);
 	const oldEvents = new Set(before.events);
 	const newEvents = new Set(after.events);
-	for (const event of after.events) if (!oldEvents.has(event)) changes.push({ kind: "added", path: `${name} event ${event}`, detail: "" });
-	for (const event of before.events) if (!newEvents.has(event)) changes.push({ kind: "removed", path: `${name} event ${event}`, detail: "" });
+	for (const event of after.events)
+		if (!oldEvents.has(event)) changes.push({ kind: "added", path: `${name} event ${event}`, detail: "" });
+	for (const event of before.events)
+		if (!newEvents.has(event)) changes.push({ kind: "removed", path: `${name} event ${event}`, detail: "" });
 }
 
 /** Adds the changes between two keyed collections, comparing each kept entry by its description. */
@@ -97,7 +107,10 @@ function describeSignatures(signatures: ReadonlyArray<Signature>): string {
 		.map(
 			(signature) =>
 				`${signature.typeParameters === undefined ? "" : `<${signature.typeParameters}>`}(${signature.parameters
-					.map((parameter) => `${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional ? "?" : ""}: ${parameter.type}`)
+					.map(
+						(parameter) =>
+							`${parameter.rest ? "..." : ""}${parameter.name}${parameter.optional ? "?" : ""}: ${parameter.type}`,
+					)
 					.join(", ")}) => ${signature.returns}`,
 		)
 		.join(" | ");

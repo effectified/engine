@@ -18,7 +18,10 @@ export const usages = Effect.fn("usages")(function* (directory: string, packageN
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	const files = (yield* fs.readDirectory(directory, { recursive: true })).filter(
-		(file) => /\.(c|m)?[jt]sx?$/.test(file) && !file.endsWith(".d.ts") && !file.split(path.sep).some((part) => part === "node_modules" || part === "dist"),
+		(file) =>
+			/\.(c|m)?[jt]sx?$/.test(file) &&
+			!file.endsWith(".d.ts") &&
+			!file.split(path.sep).some((part) => part === "node_modules" || part === "dist"),
 	);
 	const found: Array<Usage> = [];
 	for (const file of files.sort()) {
@@ -40,7 +43,9 @@ function read(file: string, source: string, packageName: string): ReadonlyArray<
 	const uses: Array<Usage> = [];
 	const names = new Set<string>();
 	const quoted = [`"${packageName}"`, `'${packageName}'`];
-	for (const node of root.findAll({ rule: { any: [{ kind: "import_statement" }, { pattern: "require($SOURCE)" }] } })) {
+	for (const node of root.findAll({
+		rule: { any: [{ kind: "import_statement" }, { pattern: "require($SOURCE)" }] },
+	})) {
 		const text = node.text();
 		if (!quoted.some((specifier) => text.includes(specifier))) continue;
 		uses.push({ file, line: node.range().start.line + 1, kind: "import", text: oneLine(text) });
@@ -49,11 +54,14 @@ function read(file: string, source: string, packageName: string): ReadonlyArray<
 		}
 	}
 	if (names.size === 0) return uses;
-	for (const node of root.findAll({ rule: { any: [{ kind: "call_expression" }, { kind: "new_expression" }, { kind: "await_expression" }] } })) {
+	for (const node of root.findAll({
+		rule: { any: [{ kind: "call_expression" }, { kind: "new_expression" }, { kind: "await_expression" }] },
+	})) {
 		const text = node.text();
 		const head = /^(?:await\s+|new\s+)?([A-Za-z_$][\w$]*)/.exec(text)?.[1];
 		if (head === undefined || !names.has(head)) continue;
-		const kind = node.kind() === "await_expression" ? "await" : node.kind() === "new_expression" ? "construct" : "call";
+		const kind =
+			node.kind() === "await_expression" ? "await" : node.kind() === "new_expression" ? "construct" : "call";
 		uses.push({ file, line: node.range().start.line + 1, kind, text: oneLine(text).slice(0, 160) });
 	}
 	return uses;
@@ -72,6 +80,11 @@ export function usagesMarkdown(packageName: string, found: ReadonlyArray<Usage>)
 		"",
 		`${found.length} uses in ${byFile.size} files.`,
 		"",
-		...[...byFile].flatMap(([file, uses]) => [`## ${file}`, "", ...uses.map((use) => `- [ ] ${use.line}: ${use.kind} \`${use.text}\``), ""]),
+		...[...byFile].flatMap(([file, uses]) => [
+			`## ${file}`,
+			"",
+			...uses.map((use) => `- [ ] ${use.line}: ${use.kind} \`${use.text}\``),
+			"",
+		]),
 	].join("\n");
 }

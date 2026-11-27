@@ -1,0 +1,18 @@
+// The engine's formatting: oxfmt over src/**/*.ts, test/*.ts, scripts/**/*.ts and bin/*.js (`pnpm check`, `pnpm format`).
+{
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"useTabs": true,
+	"tabWidth": 3,
+	"printWidth": 120,
+	"singleQuote": false,
+	"jsxSingleQuote": false,
+	"quoteProps": "as-needed",
+	"trailingComma": "all",
+	"semi": true,
+	"arrowParens": "always",
+	"bracketSameLine": false,
+	"bracketSpacing": true,
+	// The runtimes are copied verbatim into every facade, and the fixtures are what the generator must write: output,
+	// compared byte for byte, that formatting would change.
+	"ignorePatterns": ["src/runtime/**", "test/fixtures/**", "dist/**", ".cache/**"]
+}

@@ -2,15 +2,27 @@
 // build (the facade package) and verify (install and type check it). Each step reads what the one before wrote, so a
 // person or an agent can stop after any of them, edit, and go on.
 
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { analyze } from "./analyze.ts";
 import { manifestPath, readElements } from "./elements.ts";
 import { typedElements } from "./element-types.ts";
 import { type Drift, drift, driftMarkdown } from "./drift.ts";
-import { runCommand } from "./command.ts";
+import { runCommand, temporaryDirectory } from "./command.ts";
+import { effectNative } from "./diagnostics.ts";
 import { readTestDocs } from "./docs.ts";
-import { generate, writeFiles } from "./generate.ts";
-import { decodeRecipe, draftRecipe, facadeVersion, type MethodOverride, PACKAGES_REPOSITORY, type Recipe, releaseTag, releaseUrl } from "./recipe.ts";
+import { generate, valueExports, writeFiles } from "./generate.ts";
+import { entryFiles, type Imported, importableNames, importFiles } from "./imports.ts";
+import {
+	decodeRecipe,
+	draftRecipe,
+	facadeVersion,
+	type MethodOverride,
+	PACKAGES_REPOSITORY,
+	type Recipe,
+	releaseTag,
+	releaseUrl,
+	wrappedExports,
+} from "./recipe.ts";
 import { type Scan, scan } from "./scan.ts";
 import { decodeSurface, type Surface } from "./surface.ts";
 import { resolveTarget } from "./target.ts";
@@ -26,7 +38,10 @@ export interface TargetFiles {
 }
 
 /** A step failed in a way the steps themselves report: the package does not type check, or a file is missing. */
-export class StepError extends Schema.TaggedError<StepError>()("StepError", { step: Schema.String, reason: Schema.String }) {}
+export class StepError extends Schema.TaggedError<StepError, { readonly brand: unique symbol }>()("StepError", {
+	step: Schema.String,
+	reason: Schema.String,
+}) {}
 
 /** Where a package's files are under `out`. */
 export const targetFiles = Effect.fn("targetFiles")(function* (out: string, packageName: string) {
@@ -41,27 +56,62 @@ export const targetFiles = Effect.fn("targetFiles")(function* (out: string, pack
 	} satisfies TargetFiles;
 });
 
-/** Resolves and installs a target, reads its surface and scans its source; writes `surface.json` and `scan.json`. */
+/**
+ * Resolves and installs a target, reads its surface, marks the exports Node cannot import by name in every build it
+ * resolves (`erased`; importing runs upstream's code, bare and within a deadline: `importableNames`), and scans its
+ * source; writes `surface.json` and `scan.json`.
+ */
 export const study = Effect.fn("study")(function* (input: string, cache: string, out: string) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
 	const target = yield* resolveTarget(input);
 	const workspace = yield* prepareWorkspace(target, cache);
-	const analyzed = yield* analyze(workspace);
+	const analyzed = absentAtRunTime(
+		yield* analyze(workspace),
+		yield* importableNames(workspace.directory, target.package),
+	);
 	const manifest = yield* manifestPath(workspace);
 	const read = manifest === undefined ? undefined : yield* readElements(workspace, manifest);
-	const surface = read === undefined ? analyzed : { ...analyzed, elements: yield* typedElements(workspace, read.elements, read.documented) };
+	const surface =
+		read === undefined
+			? analyzed
+			: { ...analyzed, elements: yield* typedElements(workspace, read.elements, read.documented) };
 	const found = yield* scan(workspace);
 	const files = yield* targetFiles(out, target.package);
-	const readme = yield* fs.readFileString(path.join(workspace.packageDirectory, "README.md")).pipe(Effect.orElseSucceed(() => ""));
+	const readme = yield* fs
+		.readFileString(path.join(workspace.packageDirectory, "README.md"))
+		.pipe(Effect.orElseSucceed(() => ""));
 	yield* fs.makeDirectory(files.directory, { recursive: true });
 	yield* fs.writeFileString(files.surface, json(surface));
 	yield* fs.writeFileString(files.scan, json(found));
 	return { surface, scan: found, readme, files, workspace };
 });
 
+/**
+ * `surface` with each export the module's run-time `names` lack marked `erased: "runtime"`, those the declarations
+ * erase already kept so, and `runtime: "imported"`. A package Node could not import (a library that needs a browser)
+ * is left as its declarations say, `runtime: "unimportable"`.
+ */
+export function absentAtRunTime(surface: Surface, names: Option.Option<ReadonlyArray<string>>): Surface {
+	if (Option.isNone(names)) return { ...surface, runtime: "unimportable" };
+	const present = new Set(names.value);
+	return {
+		...surface,
+		exports: surface.exports.map((item) =>
+			item.erased !== undefined || present.has(item.name) ? item : { ...item, erased: "runtime" as const },
+		),
+		runtime: "imported",
+	};
+}
+
 /** Drafts the recipe into `recipe.json`, keeping every decision an agent or a person made in the one already there. */
-export const draft = Effect.fn("draft")(function* (surface: Surface, found: Scan, readme: string, files: TargetFiles, frontend = false) {
+export const draft = Effect.fn("draft")(function* (
+	surface: Surface,
+	found: Scan,
+	readme: string,
+	files: TargetFiles,
+	frontend = false,
+) {
 	const fs = yield* FileSystem.FileSystem;
 	const previous = (yield* fs.exists(files.recipe)) ? yield* readRecipe(files) : undefined;
 	const recipe = yield* draftRecipe(surface, found, readme, previous, frontend);
@@ -86,22 +136,66 @@ export const build = Effect.fn("build")(function* (files: TargetFiles) {
 	return { surface, recipe, files: generated };
 });
 
-/** Installs the generated package's dependencies (scripts off) and type checks it with TypeScript 7. */
+/**
+ * Installs the generated package's dependencies (scripts off), type checks it with TypeScript 7, holds it to the
+ * Effect-native standard (`@effect/tsgo`'s rules run by tsrs, the idioms run by oxlint), builds its release into
+ * `dist/` and imports every entry point of it in Node (`importBuilt`). Returns what only TypeScript 7.1 rejects, as
+ * notes, and what Node made of each entry point.
+ */
 export const verify = Effect.fn("verify")(function* (files: TargetFiles) {
 	yield* install(files);
 	const check = yield* typeCheck(files);
 	if (check.exitCode !== 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
+	const { notes } = yield* effectNative(files.package);
+	yield* buildRelease(files);
+	return { notes, imported: yield* importBuilt(files) };
+});
+
+/** Builds the facade's release into `dist/` with TypeScript 7, as `release` packs it. */
+const buildRelease = Effect.fn("buildRelease")(function* (files: TargetFiles) {
+	const built = yield* runCommand(
+		"node",
+		["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json", "--noCheck", "false"],
+		files.package,
+	);
+	if (built.exitCode !== 0) return yield* new StepError({ step: "build", reason: tail(built.output) });
+});
+
+/**
+ * Imports every entry point of the facade's built `dist/` in Node, as an importer reaches it (`exports`, wildcards
+ * expanded): a runtime facade that builds and tests but cannot be imported (a re-export of a name upstream's module
+ * lacks) fails. A frontend facade runs in a browser and ships as its bundler resolves it: what Node makes of it, an
+ * error linking it or one while its modules run, is reported, never failed, since its Vite bundle and its browser tests
+ * check it.
+ */
+const importBuilt = Effect.fn("importBuilt")(function* (files: TargetFiles) {
+	const recipe = yield* readRecipe(files);
+	const entries = yield* entryFiles(files.package);
+	const imported: ReadonlyArray<Imported> = yield* importFiles(
+		files.package,
+		entries,
+		recipe.ui === undefined ? "node" : "browser",
+	);
+	const failed = imported.flatMap((entry) => (entry.kind === "failed" ? [`${entry.file}: ${entry.message}`] : []));
+	if (entries.length === 0) failed.push("package.json names no entry point to import");
+	if (failed.length > 0) return yield* new StepError({ step: "import", reason: failed.join("\n") });
+	return imported;
 });
 
 /**
  * Generates, type checks, and turns what the compiler says about a spec into the recipe's method overrides, until
  * the package compiles. The analyzer and upstream's types can read a method differently (a generic whose result
- * collapses to `any`, say); the facade's types are the compiler's, so the runtime must follow them.
+ * collapses to `any`, say); the facade's types are the compiler's, so the runtime must follow them. The compiler is
+ * TypeScript 7.0.2, the one the facade's users build with; what only TypeScript 7.1 rejects comes back as notes, a
+ * surface studied before engine 0.4.0 as `restudy` (`restudyNote`), and offered exports named by a string, which the
+ * facade leaves out, as `unwrapped` (`unwrappedNote`).
  */
 export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	yield* build(files);
+	const built = yield* build(files);
+	const restudy = restudyNote(built.surface, built.recipe);
+	const unwrapped = unwrappedNote(built.surface, built.recipe);
 	yield* install(files);
 	const decided: Record<string, MethodOverride> = {};
 	const kept: Array<string> = [];
@@ -111,7 +205,11 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 			// The package compiles; its declarations may not (a lifted type naming what upstream does not export),
 			// and those they emit may name packages the facade does not declare yet.
 			const emitted = yield* settleTypeDependencies(files);
-			if (emitted.kind === "settled") return { rounds: round, overrides: decided, derived: kept };
+			if (emitted.kind === "settled") {
+				// It compiles and emits: it must also hold to the Effect-native standard, which no override can settle.
+				const { notes } = yield* effectNative(files.package);
+				return { rounds: round, overrides: decided, derived: kept, notes, restudy, unwrapped };
+			}
 			if (emitted.kind === "changed") {
 				yield* build(files);
 				yield* install(files);
@@ -121,18 +219,31 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 		}
 		const sources = new Map<string, string>();
 		for (const [, file] of check.output.matchAll(/^([\w./-]+\.ts)\(\d+,\d+\): error/gm)) {
-			if (file !== undefined && !sources.has(file)) sources.set(file, yield* fs.readFileString(path.join(files.package, file)).pipe(Effect.orElseSucceed(() => "")));
+			if (file !== undefined && !sources.has(file))
+				sources.set(
+					file,
+					yield* fs.readFileString(path.join(files.package, file)).pipe(Effect.orElseSucceed(() => "")),
+				);
 		}
 		const rejected = rejectedMarkers(check.output, (file) => sources.get(file) ?? "");
 		// A generic signature or an element's type that names what upstream does not declare falls back to derived
 		// (untyped) types; a property upstream's element type does not have is left out.
-		const derived = rejected.filter((item) => (item.marker === "explicit" || item.marker === "element") && !kept.includes(item.key)).map((item) => item.key);
+		const derived = rejected
+			.filter((item) => (item.marker === "explicit" || item.marker === "element") && !kept.includes(item.key))
+			.map((item) => item.key);
 		// A derived generic method TypeScript cannot type through a call keeps its derived type.
-		const unlifted = rejected.filter((item) => item.marker === "lifted" && !kept.includes(`lifted:${item.key}`)).map((item) => item.key);
-		const excluded = rejected.filter((item) => item.marker === "property").map((item) => [item.key, "exclude" as MethodOverride] as const);
+		const unlifted = rejected
+			.filter((item) => item.marker === "lifted" && !kept.includes(`lifted:${item.key}`))
+			.map((item) => item.key);
+		const excluded = rejected
+			.filter((item) => item.marker === "property")
+			.map((item) => [item.key, "exclude" as MethodOverride] as const);
 		// An override already tried once means the spec and the types disagree in a way overrides cannot settle.
-		const found = [...Object.entries(overridesFrom(check.output)), ...excluded].filter(([key]) => decided[key] === undefined);
-		if (found.length === 0 && derived.length === 0 && unlifted.length === 0) return yield* new StepError({ step: "tsc", reason: tail(check.output) });
+		const found = [...Object.entries(overridesFrom(check.output)), ...excluded].filter(
+			([key]) => decided[key] === undefined,
+		);
+		if (found.length === 0 && derived.length === 0 && unlifted.length === 0)
+			return yield* new StepError({ step: "tsc", reason: tail(check.output) });
 		const recipe = yield* readRecipe(files);
 		for (const [key, value] of found) decided[key] = value;
 		kept.push(...derived, ...unlifted.map((key) => `lifted:${key}`));
@@ -142,13 +253,42 @@ export const reconcile = Effect.fn("reconcile")(function* (files: TargetFiles) {
 				...recipe,
 				methods: { ...recipe.methods, ...Object.fromEntries(found) },
 				derived: [...new Set([...recipe.derived, ...derived])].sort(),
-				...(unlifted.length === 0 ? {} : { unlifted: [...new Set([...(recipe.unlifted ?? []), ...unlifted])].sort() }),
+				...(unlifted.length === 0
+					? {}
+					: { unlifted: [...new Set([...(recipe.unlifted ?? []), ...unlifted])].sort() }),
 			}),
 		);
 		yield* build(files);
 	}
 	return yield* new StepError({ step: "reconcile", reason: `the package did not compile after ${MAX_ROUNDS} rounds` });
 });
+
+/**
+ * The note for a runtime facade whose surface was studied before engine 0.4.0: it tells nothing of what Node can import
+ * from upstream by name, so the facade re-exports none of upstream's values (`valueExports`); `study` finds which of
+ * them Node can import, and the facade then re-exports those. None when it withholds nothing.
+ */
+export function restudyNote(surface: Surface, recipe: Recipe): Option.Option<string> {
+	const values = valueExports(surface, recipe);
+	if (recipe.ui !== undefined || values.kind !== "unprobed" || values.withheld.length === 0) return Option.none();
+	return Option.some(
+		`${surface.package}'s surface.json was studied before engine 0.4.0 and tells nothing of what Node can import from it by name, so the facade re-exports none of its ${values.withheld.length} values that need no wrapping (${values.withheld.join(", ")}): \`effectify study ${surface.package}@${surface.version}\` finds which of them Node can import, and the facade re-exports those`,
+	);
+}
+
+/**
+ * The note for the exports a recipe offers that its facade leaves out, being named by a string (`export { x as
+ * "fetch-it" }`): a wrapper is a declaration named after its export (`wrappedExports`), which a string cannot name, so
+ * each stays `Upstream["<name>"]`. None when the facade wraps every export it offers.
+ */
+export function unwrappedNote(surface: Surface, recipe: Recipe): Option.Option<string> {
+	const wrapped = new Set(wrappedExports(surface, recipe).map((item) => item.name));
+	const left = surface.exports.filter((item) => recipe.exports.includes(item.name) && !wrapped.has(item.name));
+	if (recipe.ui !== undefined || left.length === 0) return Option.none();
+	return Option.some(
+		`the recipe offers exports named by strings (${left.map((item) => JSON.stringify(item.name)).join(", ")}): a facade declares each wrapper under its export's name, which a string cannot be, so it leaves them out; reach each as \`Upstream["<name>"]\``,
+	);
+}
 
 /** How often `reconcile` regenerates; tsc names at most a few missing properties per error, so it may take several. */
 const MAX_ROUNDS = 12;
@@ -166,7 +306,10 @@ export const test = Effect.fn("test")(function* (files: TargetFiles) {
 /** Whether the facade's current version (`<name>-v<version>`) is released on PACKAGES_REPOSITORY. */
 export const isReleased = Effect.fn("isReleased")(function* (files: TargetFiles, root: string) {
 	const recipe = yield* readRecipe(files);
-	return (yield* runCommand("gh", ["release", "view", releaseTag(recipe), "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0;
+	return (
+		(yield* runCommand("gh", ["release", "view", releaseTag(recipe), "--repo", PACKAGES_REPOSITORY], root))
+			.exitCode === 0
+	);
 });
 
 /**
@@ -181,19 +324,24 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	const version = facadeVersion(recipe);
 	const tag = releaseTag(recipe);
 	const git = (args: ReadonlyArray<string>) => runCommand("git", args, root);
-	if ((yield* git(["status", "--porcelain"])).output.trim() !== "") return yield* new StepError({ step: "release", reason: "the tree has uncommitted changes" });
+	if ((yield* git(["status", "--porcelain"])).output.trim() !== "")
+		return yield* new StepError({ step: "release", reason: "the tree has uncommitted changes" });
 	const head = (yield* git(["rev-parse", "HEAD"])).output.trim();
 	yield* git(["fetch", "--quiet", "origin"]);
 	if (!(yield* git(["branch", "--remotes", "--contains", head])).output.includes("origin/")) {
 		return yield* new StepError({ step: "release", reason: `HEAD ${head} is not pushed` });
 	}
 	if ((yield* runCommand("gh", ["release", "view", tag, "--repo", PACKAGES_REPOSITORY], root)).exitCode === 0) {
-		return yield* new StepError({ step: "release", reason: `${tag} is released already; a release is never replaced` });
+		return yield* new StepError({
+			step: "release",
+			reason: `${tag} is released already; a release is never replaced`,
+		});
 	}
 	yield* install(files);
-	const built = yield* runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json"], files.package);
-	if (built.exitCode !== 0) return yield* new StepError({ step: "build", reason: tail(built.output) });
-	const packed = yield* fs.makeTempDirectoryScoped();
+	yield* buildRelease(files);
+	// What is released must import: a facade that built and tested can still fail as it loads.
+	yield* importBuilt(files);
+	const packed = yield* temporaryDirectory();
 	const pack = yield* runCommand("npm", ["pack", "--ignore-scripts", "--pack-destination", packed], files.package);
 	if (pack.exitCode !== 0) return yield* new StepError({ step: "npm pack", reason: tail(pack.output) });
 	// The tarball is named as its URL says, whatever npm made of a `+revision` in the file it wrote.
@@ -230,7 +378,21 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 	);
 	const created = yield* runCommand(
 		"gh",
-		["release", "create", tag, "--repo", PACKAGES_REPOSITORY, "--target", head, "--prerelease", "--title", `${recipe.name} ${version}`, "--notes-file", notes, ...assets],
+		[
+			"release",
+			"create",
+			tag,
+			"--repo",
+			PACKAGES_REPOSITORY,
+			"--target",
+			head,
+			"--prerelease",
+			"--title",
+			`${recipe.name} ${version}`,
+			"--notes-file",
+			notes,
+			...assets,
+		],
 		root,
 	);
 	if (created.exitCode !== 0) return yield* new StepError({ step: "gh release", reason: tail(created.output) });
@@ -240,7 +402,15 @@ export const release = Effect.fn("release")(function* (files: TargetFiles, root:
 /** What `sync` did with one target. */
 export type Synced =
 	| { readonly kind: "current"; readonly package: string; readonly version: string }
-	| { readonly kind: "updated"; readonly package: string; readonly from: string; readonly to: string; readonly drift: Drift };
+	| {
+			readonly kind: "updated";
+			readonly package: string;
+			readonly from: string;
+			readonly to: string;
+			readonly drift: Drift;
+			/** What only TypeScript 7.1 rejects in the regenerated facade (`reconcile`'s notes). */
+			readonly notes: ReadonlyArray<string>;
+	  };
 
 /**
  * Brings a target to upstream's latest version: studies it, writes the drift (`DRIFT.md`), redrafts the recipe
@@ -253,14 +423,22 @@ export const sync = Effect.fn("sync")(function* (packageName: string, cache: str
 	const files = yield* targetFiles(out, packageName);
 	const before = yield* fs.readFileString(files.surface).pipe(Effect.flatMap(decodeSurface));
 	const latest = yield* resolveTarget(packageName);
-	if (latest.version === before.version) return { kind: "current", package: packageName, version: before.version } satisfies Synced;
+	if (latest.version === before.version)
+		return { kind: "current", package: packageName, version: before.version } satisfies Synced;
 	const studied = yield* study(`${packageName}@${latest.version}`, cache, out);
 	const changes = drift(before, studied.surface);
 	yield* fs.writeFileString(path.join(files.directory, "DRIFT.md"), driftMarkdown(changes));
 	yield* draft(studied.surface, studied.scan, studied.readme, files);
-	yield* reconcile(files);
+	const { notes } = yield* reconcile(files);
 	yield* test(files);
-	return { kind: "updated", package: packageName, from: before.version, to: latest.version, drift: changes } satisfies Synced;
+	return {
+		kind: "updated",
+		package: packageName,
+		from: before.version,
+		to: latest.version,
+		drift: changes,
+		notes,
+	} satisfies Synced;
 });
 
 /** The npm names of every target under `out` (each directory with a `recipe.json`). */
@@ -270,7 +448,8 @@ export const listTargets = Effect.fn("listTargets")(function* (out: string) {
 	const names: Array<string> = [];
 	for (const entry of yield* fs.readDirectory(out)) {
 		const recipe = path.join(out, entry, "recipe.json");
-		if (yield* fs.exists(recipe)) names.push((yield* readRecipe({ ...(yield* targetFiles(out, entry)), recipe })).package);
+		if (yield* fs.exists(recipe))
+			names.push((yield* readRecipe({ ...(yield* targetFiles(out, entry)), recipe })).package);
 	}
 	return names.sort();
 });
@@ -286,8 +465,11 @@ export function rejectedMarkers(diagnostics: string, read: (file: string) => str
 	const found = new Map<string, Rejected>();
 	for (const [, file, line] of diagnostics.matchAll(/^([\w./-]+\.ts)\((\d+),\d+\): error/gm)) {
 		if (file === undefined) continue;
-		const marked = /\/\/ (explicit|lifted|property|element): (\S+)$/.exec(read(file).split("\n")[Number(line) - 1] ?? "");
-		if (marked !== null) found.set(`${marked[1]}:${marked[2]}`, { marker: marked[1] as Rejected["marker"], key: marked[2] ?? "" });
+		const marked = /\/\/ (explicit|lifted|property|element): (\S+)$/.exec(
+			read(file).split("\n")[Number(line) - 1] ?? "",
+		);
+		if (marked !== null)
+			found.set(`${marked[1]}:${marked[2]}`, { marker: marked[1] as Rejected["marker"], key: marked[2] ?? "" });
 	}
 	return [...found.values()];
 }
@@ -305,20 +487,28 @@ export function overridesFrom(diagnostics: string): Record<string, MethodOverrid
 	// `StreamSpec` also names the handles: `StreamSpec<Pick<Page, PageMethods>, Handles>`.
 	const spec = String.raw`'(Async|Stream)Spec<Pick<.*?(\w+)Methods>(?:, Handles)?>'`;
 	// Listed in a spec, but upstream's types do not read the method so: it is something else.
-	for (const [, method, , handle] of diagnostics.matchAll(new RegExp(String.raw`'"([^"]+)"' does not exist in type ${spec}`, "g"))) {
+	for (const [, method, , handle] of diagnostics.matchAll(
+		new RegExp(String.raw`'"([^"]+)"' does not exist in type ${spec}`, "g"),
+	)) {
 		overrides[`${handle}.${method}`] = "sync";
 	}
 	// Missing from a spec that upstream's types require.
-	for (const [, method, kind, handle] of diagnostics.matchAll(new RegExp(String.raw`Property '([^']+)' is missing in type '.*?' but required in type ${spec}`, "g"))) {
+	for (const [, method, kind, handle] of diagnostics.matchAll(
+		new RegExp(String.raw`Property '([^']+)' is missing in type '.*?' but required in type ${spec}`, "g"),
+	)) {
 		overrides[`${handle}.${method}`] = kind === "Async" ? "async" : "stream";
 	}
-	for (const [, kind, handle, list] of diagnostics.matchAll(new RegExp(String.raw`missing the following properties from type ${spec}: ([^.\n]+)`, "g"))) {
+	for (const [, kind, handle, list] of diagnostics.matchAll(
+		new RegExp(String.raw`missing the following properties from type ${spec}: ([^.\n]+)`, "g"),
+	)) {
 		for (const method of (list ?? "").split(/, | and /).filter((name) => /^[\w$]+$/.test(name))) {
 			overrides[`${handle}.${method}`] = kind === "Async" ? "async" : "stream";
 		}
 	}
 	// Listed as a method but not one of upstream's public methods.
-	for (const [, handle, method] of diagnostics.matchAll(/Type '(\w+)Methods' does not satisfy the constraint '[^']*'\.\s+Type '"([^"]+)"' is not assignable/g)) {
+	for (const [, handle, method] of diagnostics.matchAll(
+		/Type '(\w+)Methods' does not satisfy the constraint '[^']*'\.\s+Type '"([^"]+)"' is not assignable/g,
+	)) {
 		overrides[`${handle}.${method}`] = "exclude";
 	}
 	return overrides;
@@ -326,7 +516,11 @@ export function overridesFrom(diagnostics: string): Record<string, MethodOverrid
 
 const install = Effect.fn("install")(function* (files: TargetFiles) {
 	// --allow-remote=all: frontend facades take Effect UI's snapshot build and the puppeteer facade from URLs.
-	const result = yield* runCommand("npm", ["install", "--ignore-scripts", "--allow-remote=all", "--no-audit", "--no-fund", "--loglevel=error"], files.package);
+	const result = yield* runCommand(
+		"npm",
+		["install", "--ignore-scripts", "--allow-remote=all", "--no-audit", "--no-fund", "--loglevel=error"],
+		files.package,
+	);
 	if (result.exitCode !== 0) return yield* new StepError({ step: "npm install", reason: tail(result.output) });
 });
 
@@ -339,12 +533,29 @@ const install = Effect.fn("install")(function* (files: TargetFiles) {
 const settleTypeDependencies = Effect.fn("settleTypeDependencies")(function* (files: TargetFiles) {
 	const fs = yield* FileSystem.FileSystem;
 	const path = yield* Path.Path;
-	const out = yield* fs.makeTempDirectoryScoped();
-	const emitted = yield* runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json", "--outDir", out, "--pretty", "false"], files.package);
+	const out = yield* temporaryDirectory();
+	const emitted = yield* runCommand(
+		"node",
+		[
+			"node_modules/typescript/bin/tsc",
+			"-p",
+			"tsconfig.build.json",
+			"--outDir",
+			out,
+			"--pretty",
+			"false",
+			"--noCheck",
+			"false",
+		],
+		files.package,
+	);
 	if (emitted.exitCode !== 0) return { kind: "failed", diagnostics: emitted } satisfies Emitted;
 	const recipe = yield* readRecipe(files);
 	// Trust boundary: package manifests are files, read as untyped JSON.
-	const manifest = (file: string) => fs.readFileString(file).pipe(Effect.map((text): { readonly dependencies?: Record<string, string> } => JSON.parse(text)));
+	const manifest = (file: string) =>
+		fs
+			.readFileString(file)
+			.pipe(Effect.map((text): { readonly dependencies?: Record<string, string> } => JSON.parse(text)));
 	const own = yield* manifest(path.join(files.package, "package.json"));
 	const upstream = yield* manifest(path.join(files.package, "node_modules", recipe.package, "package.json"));
 	const found: Record<string, string> = {};
@@ -357,7 +568,9 @@ const settleTypeDependencies = Effect.fn("settleTypeDependencies")(function* (fi
 		}
 	}
 	if (Object.keys(found).length === 0) return { kind: "settled" } satisfies Emitted;
-	const typeDependencies = Object.fromEntries(Object.entries({ ...recipe.typeDependencies, ...found }).sort(([a], [b]) => a.localeCompare(b)));
+	const typeDependencies = Object.fromEntries(
+		Object.entries({ ...recipe.typeDependencies, ...found }).sort(([a], [b]) => a.localeCompare(b)),
+	);
 	yield* fs.writeFileString(files.recipe, json({ ...recipe, typeDependencies }));
 	return { kind: "changed" } satisfies Emitted;
 }, Effect.scoped);
@@ -368,8 +581,13 @@ type Emitted =
 	| { readonly kind: "changed" }
 	| { readonly kind: "failed"; readonly diagnostics: { readonly exitCode: number; readonly output: string } };
 
+// `--noCheck false`: a tsconfig.json that skips checking (`noCheck`, in it or one it extends) would pass anything.
 const typeCheck = (files: TargetFiles) =>
-	runCommand("node", ["node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--pretty", "false"], files.package);
+	runCommand(
+		"node",
+		["node_modules/typescript/bin/tsc", "-p", "tsconfig.json", "--pretty", "false", "--noCheck", "false"],
+		files.package,
+	);
 
 /** The last lines of a tool's output, enough to say what failed. */
 function tail(output: string): string {

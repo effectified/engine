@@ -4,8 +4,20 @@
 // bytes, and nothing here is edited by hand: examples change in the tests, words in the recipe's `tagline`.
 
 import { Effect, FileSystem, Path } from "effect";
-import { callbackMethods, classified, wrappedMethods } from "./methods.ts";
-import { demoUrl, description, facadeVersion, latestUrl, PACKAGES_REPOSITORY, type Recipe, releaseTag, releaseUrl, SITE, slug } from "./recipe.ts";
+import { callbackMethods, classified, keptReleases, lookupMethods, optionMethods, wrappedMethods } from "./methods.ts";
+import {
+	demoUrl,
+	description,
+	facadeVersion,
+	latestUrl,
+	PACKAGES_REPOSITORY,
+	type Recipe,
+	releaseTag,
+	releaseUrl,
+	SITE,
+	slug,
+	wrappedExports,
+} from "./recipe.ts";
 import type { Surface } from "./surface.ts";
 import { boundElements, boundEvents, boundProperties, controlState } from "./ui-facade.ts";
 
@@ -27,19 +39,39 @@ export interface TestDocs {
 	readonly demos: ReadonlyArray<string>;
 }
 
-/** A facade's API as its users meet it: what it exports, its services, errors, handles, elements and mounts. */
+/**
+ * A facade's API as its users meet it: what it exports, its services, errors (`codes` are the cases of each one's
+ * `reason`), handles (`options`: the Effects whose value may be absent, an `Option`), secrets, elements and mounts.
+ * Fields added since schema 1 are optional: a reader of schema 1 ignores them.
+ */
 export interface Api {
 	readonly exports: ReadonlyArray<string>;
 	readonly services: ReadonlyArray<{ readonly name: string; readonly handle: string; readonly acquire: string }>;
-	readonly errors: ReadonlyArray<{ readonly tag: string; readonly instanceOf?: string; readonly codes: ReadonlyArray<string> }>;
+	readonly errors: ReadonlyArray<{
+		readonly tag: string;
+		readonly instanceOf?: string;
+		readonly codes: ReadonlyArray<string>;
+	}>;
 	readonly handles: ReadonlyArray<{
 		readonly name: string;
 		readonly release?: string;
 		readonly effects: ReadonlyArray<string>;
+		readonly options?: ReadonlyArray<string>;
+		/** The lookups: Effects of a handle upstream already holds, wrapped and never released. */
+		readonly borrowed?: ReadonlyArray<string>;
+		/**
+		 * The release methods a borrowed facade of it keeps, of a runtime facade: each gives a handle named by its class,
+		 * which the types cannot tell from a step to another one (zmq's `Socket.close(): Socket`).
+		 */
+		readonly kept?: ReadonlyArray<string>;
 		readonly streams: ReadonlyArray<string>;
 		readonly sync: ReadonlyArray<string>;
 		readonly events: ReadonlyArray<string>;
 	}>;
+	/** The secrets each call takes also as `Redacted`, by call and path (`createTransport`: `0.auth.pass`). */
+	readonly secrets?: Readonly<Record<string, ReadonlyArray<string>>>;
+	/** The branded ids and keys, by name, with where each applies (`JobId`: `Job.id`, `Queue.getJob(0)`). */
+	readonly brands?: Readonly<Record<string, ReadonlyArray<string>>>;
 	readonly elements: ReadonlyArray<{
 		readonly tag: string;
 		readonly name: string;
@@ -65,7 +97,12 @@ export interface Docs {
 	readonly engine: string;
 	readonly page: string;
 	readonly source: string;
-	readonly install: { readonly latest: string; readonly release: string; readonly tag: string; readonly effectUi?: string };
+	readonly install: {
+		readonly latest: string;
+		readonly release: string;
+		readonly tag: string;
+		readonly effectUi?: string;
+	};
 	/** The built demo of a frontend facade, attached to its release: a tarball of `<demo>.html` pages and their assets. */
 	readonly demo?: { readonly url: string; readonly pages: ReadonlyArray<string> };
 	readonly tests: number;
@@ -74,7 +111,12 @@ export interface Docs {
 }
 
 /** The documentation files of a facade, by path relative to its package. */
-export function docsFiles(surface: Surface, recipe: Recipe, tests: TestDocs, engine: string): ReadonlyMap<string, string> {
+export function docsFiles(
+	surface: Surface,
+	recipe: Recipe,
+	tests: TestDocs,
+	engine: string,
+): ReadonlyMap<string, string> {
 	const docs = docsOf(surface, recipe, tests, engine);
 	return new Map([
 		["README.md", readme(docs)],
@@ -89,7 +131,9 @@ export const readTestDocs = Effect.fn("readTestDocs")(function* (packageDirector
 	const path = yield* Path.Path;
 	const root = path.join(packageDirectory, "test");
 	if (!(yield* fs.exists(root))) return { examples: [], tests: 0, demos: [] } satisfies TestDocs;
-	const all = (yield* fs.readDirectory(root, { recursive: true })).map((file) => file.split(path.sep).join("/")).sort();
+	const all = (yield* fs.readDirectory(root, { recursive: true }))
+		.map((file) => file.split(path.sep).join("/"))
+		.sort();
 	const demos = all.flatMap((file) => {
 		const fixture = /^fixtures\/([\w-]+)\.html$/.exec(file)?.[1];
 		return fixture !== undefined && all.includes(`fixtures/${fixture}.ts`) ? [fixture] : [];
@@ -182,7 +226,9 @@ function importsOf(text: string, name: string): ReadonlyArray<(body: string) => 
 		const prefix = `import ${typeOnly === undefined ? "" : "type "}`;
 		const namespace = /^\*\s+as\s+([\w$]+)$/.exec(clause.trim());
 		if (namespace !== null) {
-			statements.push((body) => (uses(body, namespace[1] ?? "") ? [`${prefix}${clause.trim()} from ${specifier};`] : []));
+			statements.push((body) =>
+				uses(body, namespace[1] ?? "") ? [`${prefix}${clause.trim()} from ${specifier};`] : [],
+			);
 			continue;
 		}
 		const braces = /\{([\s\S]*)\}/.exec(clause);
@@ -193,9 +239,20 @@ function importsOf(text: string, name: string): ReadonlyArray<(body: string) => 
 			.filter((part) => part !== "");
 		statements.push((body) => {
 			const keptDefault = defaultName !== undefined && uses(body, defaultName) ? defaultName : undefined;
-			const kept = named.filter((part) => uses(body, part.split(" as ").at(-1)?.replace(/^type /, "") ?? ""));
+			const kept = named.filter((part) =>
+				uses(
+					body,
+					part
+						.split(" as ")
+						.at(-1)
+						?.replace(/^type /, "") ?? "",
+				),
+			);
 			if (keptDefault === undefined && kept.length === 0) return [];
-			const list = [...(keptDefault === undefined ? [] : [keptDefault]), ...(kept.length === 0 ? [] : [`{ ${kept.join(", ")} }`])];
+			const list = [
+				...(keptDefault === undefined ? [] : [keptDefault]),
+				...(kept.length === 0 ? [] : [`{ ${kept.join(", ")} }`]),
+			];
 			return [`${prefix}${list.join(", ")} from ${specifier};`];
 		});
 	}
@@ -207,7 +264,9 @@ const IMPORT = /^import\s+(?:(type\s+)?([^;"']*?)\s+from\s+)?["']([^"']+)["'];?$
 
 /** Whether `body` names `identifier` as a word. */
 function uses(body: string, identifier: string): boolean {
-	return identifier !== "" && new RegExp(String.raw`(?<![\w$.])${identifier.replace(/\$/g, "\\$")}(?![\w$])`).test(body);
+	return (
+		identifier !== "" && new RegExp(String.raw`(?<![\w$.])${identifier.replace(/\$/g, "\\$")}(?![\w$])`).test(body)
+	);
 }
 
 /** The facade's docs, from its surface, recipe and tests. */
@@ -219,7 +278,11 @@ function docsOf(surface: Surface, recipe: Recipe, tests: TestDocs, engine: strin
 		kind: recipe.ui === undefined ? "runtime" : "ui",
 		...(recipe.tagline === undefined ? {} : { tagline: recipe.tagline }),
 		description: description(recipe),
-		upstream: { package: recipe.package, version: recipe.version, npm: `https://www.npmjs.com/package/${recipe.package}` },
+		upstream: {
+			package: recipe.package,
+			version: recipe.version,
+			npm: `https://www.npmjs.com/package/${recipe.package}`,
+		},
 		version: facadeVersion(recipe),
 		engine,
 		page: `${SITE}/${slug(recipe)}`,
@@ -228,9 +291,13 @@ function docsOf(surface: Surface, recipe: Recipe, tests: TestDocs, engine: strin
 			latest: latestUrl(recipe),
 			release: releaseUrl(recipe),
 			tag: releaseTag(recipe),
-			...(recipe.ui === undefined ? {} : { effectUi: `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${recipe.ui.effectUi}` }),
+			...(recipe.ui === undefined
+				? {}
+				: { effectUi: `https://pkg.pr.new/Effect-TS/ui/@effect/ui@${recipe.ui.effectUi}` }),
 		},
-		...(recipe.ui === undefined || tests.demos.length === 0 ? {} : { demo: { url: demoUrl(recipe), pages: tests.demos } }),
+		...(recipe.ui === undefined || tests.demos.length === 0
+			? {}
+			: { demo: { url: demoUrl(recipe), pages: tests.demos } }),
 		tests: tests.tests,
 		examples: tests.examples,
 		api: apiOf(surface, recipe),
@@ -239,24 +306,42 @@ function docsOf(surface: Surface, recipe: Recipe, tests: TestDocs, engine: strin
 
 /** The facade's API, as the generator writes it. */
 function apiOf(surface: Surface, recipe: Recipe): Api {
-	// A frontend facade exports its bindings and mounts, listed as such; a runtime facade the exports it offers.
-	const exported = recipe.ui === undefined ? surface.exports.filter((item) => recipe.exports.includes(item.name)) : [];
+	// A frontend facade exports its bindings and mounts, listed as such; a runtime facade the exports it wraps.
+	const exported = recipe.ui === undefined ? wrappedExports(surface, recipe) : [];
 	return {
-		exports: exported.map((item) => (item.name === "default" ? recipe.prefix.charAt(0).toLowerCase() + recipe.prefix.slice(1) : item.name)),
+		exports: exported.map((item) =>
+			item.name === "default" ? recipe.prefix.charAt(0).toLowerCase() + recipe.prefix.slice(1) : item.name,
+		),
 		services: recipe.services,
-		errors: recipe.errors.map((error) => ({ tag: error.tag, ...(error.instanceOf === undefined ? {} : { instanceOf: error.instanceOf }), codes: error.codes })),
+		errors: recipe.errors.map((error) => ({
+			tag: error.tag,
+			...(error.instanceOf === undefined ? {} : { instanceOf: error.instanceOf }),
+			codes: error.codes,
+		})),
 		handles: Object.entries(recipe.handles).flatMap(([name, handleRecipe]) => {
 			const handle = surface.handles[name];
 			if (handle === undefined) return [];
-			const effects = [...classified(name, handle.methods, recipe, "async"), ...Object.keys(callbackMethods(name, handle.methods, recipe))].sort();
+			const effects = [
+				...classified(name, handle.methods, recipe, "async"),
+				...Object.keys(callbackMethods(name, handle.methods, recipe)),
+			].sort();
+			const options = optionMethods(name, handle.methods, recipe);
+			const borrowed = lookupMethods(name, handle, recipe);
+			// A frontend facade wraps no handle: it has no borrowed facade to keep a release on.
+			const kept = recipe.ui === undefined ? keptReleases(name, handle, surface.handles, recipe) : [];
 			const streams = classified(name, handle.methods, recipe, "stream");
 			return [
 				{
 					name,
 					...(handleRecipe.release === undefined ? {} : { release: handleRecipe.release }),
 					effects,
+					...(options.length === 0 ? {} : { options }),
+					...(borrowed.length === 0 ? {} : { borrowed }),
+					...(kept.length === 0 ? {} : { kept }),
 					streams,
-					sync: wrappedMethods(name, handle.methods, recipe).filter((method) => !effects.includes(method) && !streams.includes(method)),
+					sync: wrappedMethods(name, handle.methods, recipe).filter(
+						(method) => !effects.includes(method) && !streams.includes(method),
+					),
 					events: handleRecipe.events,
 				},
 			];
@@ -273,6 +358,8 @@ function apiOf(surface: Surface, recipe: Recipe): Api {
 			};
 		}),
 		mounts: recipe.ui?.mounts ?? [],
+		...(recipe.secrets === undefined || Object.keys(recipe.secrets).length === 0 ? {} : { secrets: recipe.secrets }),
+		...(recipe.brands === undefined || Object.keys(recipe.brands).length === 0 ? {} : { brands: recipe.brands }),
 	};
 }
 
@@ -357,23 +444,64 @@ function runtimeRules(docs: Docs): ReadonlyArray<string> {
 	const scoped = api.handles.filter((handle) => handle.release !== undefined);
 	const emitters = api.handles.filter((handle) => handle.events.length > 0);
 	const catchAll = api.errors.at(-1)?.tag;
+	const optional = api.handles.flatMap((handle) =>
+		(handle.options ?? []).map((method) => `\`${handle.name}.${method}\``),
+	);
+	const lookups = api.handles.flatMap((handle) =>
+		(handle.borrowed ?? []).map((method) => `\`${handle.name}.${method}\``),
+	);
+	const kept = api.handles.flatMap((handle) => (handle.kept ?? []).map((method) => `\`${handle.name}.${method}\``));
+	const coded = api.errors.filter((error) => error.codes.length > 0);
+	const secrets = Object.entries(api.secrets ?? {});
+	const brands = Object.entries(api.brands ?? {});
+	const [firstBrand] = brands;
 	return [
-		`- Import from \`${docs.name}\`, not from \`${docs.upstream.package}\`. ${docs.upstream.package}'s types are \`Upstream.<Type>\` (\`import { Upstream } from "${docs.name}"\`).`,
-		"- An async call returns an `Effect`, run with `yield*` inside `Effect.gen`; an async iterable is a `Stream`; a handle a call returns is a facade too. A synchronous call stays synchronous (a builder chain stays a chain).",
+		`- Import from \`${docs.name}\`, not from \`${docs.upstream.package}\`. ${docs.upstream.package}'s types are re-exported by their own names (\`import type { ... } from "${docs.name}"\`), and all of it is \`Upstream\`.`,
+		"- An async call returns an `Effect`, traced as `<Handle>.<method>` (a span and a stack frame per call, as `Effect.fn`): run it with `yield*` inside `Effect.gen` or your own `Effect.fn`. An async iterable is a `Stream`; a handle a call returns is a facade too. A synchronous call stays synchronous (a builder chain stays a chain).",
+		...(optional.length === 0
+			? []
+			: [
+					`- A value upstream may not have (\`T | null\`, \`T | undefined\`) is an \`Option\`, of the facade when it is a handle: ${optional.slice(0, 8).join(", ")}${optional.length > 8 ? ` and ${optional.length - 8} more (see the API)` : ""}. Take it apart with \`Option.match\` or \`Effect.flatMap(Option.match({ ... }))\`, never a null check.`,
+				]),
 		...(scoped.length === 0
 			? []
 			: [
-					`- Scoped: acquiring ${scoped.map((handle) => `a \`${handle.name}\``).join(", ")} needs a \`Scope\` (\`Effect.scoped\`, or a layer), and closing the scope calls its release (${scoped.map((handle) => `\`${handle.name}.${handle.release}\``).join(", ")}). Never call the release yourself.`,
+					`- Scoped: acquiring ${scoped.map((handle) => `a \`${handle.name}\``).join(", ")} needs a \`Scope\` (\`Effect.scoped\`, or a layer), and closing the scope calls its release (${scoped.map((handle) => `\`${handle.name}.${handle.release}\``).join(", ")}), even when you called that release yourself. Call a release yourself only when you need its result or its failure: the scope's release is then a second call, and when it fails (the handle is closed already) it is logged as a warning, \`<Handle>.<release> failed while its scope closed\`, and the scope still closes.${lookups.length === 0 ? "" : ` A lookup (${lookups.join(", ")}) returns one ${docs.upstream.package} already holds: it needs no \`Scope\`, and the facade never releases it.`} A synchronous call that makes one hands you its facade, release methods and all: release it yourself. A handle ${docs.upstream.package} already holds (${lookups.length === 0 ? "" : "a lookup's, "}the receiver a chained call returns, a property's) is borrowed: its facade has no release method, which is its owner's${kept.length === 0 ? "" : `, but one that gives a handle named by its class, which the types cannot tell from a step to another one (${kept.join(", ")}): called on a borrowed facade, it releases what the owner holds`}.`,
 				]),
 		...(api.services.length === 0
 			? []
 			: [
 					`- Services: ${api.services.map((service) => `\`${service.name}\` (a \`${service.handle}\`)`).join(", ")}. Provide one at the program's edge with \`<Service>.layer(<acquiring Effect>)\` and read it with \`yield* <Service>\`.`,
 				]),
-		`- Failures are tagged: ${api.errors.length <= 1 ? `\`${catchAll ?? `${docs.slug}Error`}\`` : `${api.errors.slice(0, -1).map((error) => `\`${error.tag}\``).join(", ")}, and \`${catchAll}\` for any other failure`}. Handle one with \`Effect.catchTag("<Tag>", ...)\`; each carries \`operation\` (\`"<Handle>.<method>"\`), \`message\`, upstream's \`code\` when it has one, and \`cause\`.`,
+		`- Failures are branded \`Schema.TaggedError\`s: ${
+			api.errors.length <= 1
+				? `\`${catchAll ?? `${docs.slug}Error`}\``
+				: `${api.errors
+						.slice(0, -1)
+						.map((error) => `\`${error.tag}\``)
+						.join(", ")}, and \`${catchAll}\` for any other failure`
+		}. Handle one with \`Effect.catchTag("<Tag>", ...)\`; each carries \`operation\` (\`"<Handle>.<method>"\`), \`message\`, upstream's \`code\` when it has one, the fields upstream's error declares, and upstream's failure as \`cause\`, \`Redacted\` (\`Redacted.value(error.cause)\`), printed nowhere. \`Failure\` is the Schema of every one: \`Failure.match(error, { <Tag>: ... })\`, \`Failure.guards.<Tag>(value)\`.`,
+		...(coded.length === 0
+			? []
+			: [
+					`- ${coded.map((error) => `\`${error.tag}\``).join(", ")} ${coded.length === 1 ? "carries" : "carry"} \`reason\`, upstream's code as a tagged union (\`${coded[0]?.codes.slice(0, 3).join("`, `")}\`...): pick one with \`Effect.catchReason("${coded[0]?.tag}", "${coded[0]?.codes[0]}", (reason, error) => ...)\`.`,
+				]),
+		...(firstBrand === undefined
+			? []
+			: [
+					`- Ids and keys are branded strings, so ids of different things cannot mix: ${brands.map(([brand, places]) => `\`${brand}\` (${places.map((place) => `\`${place}\``).join(", ")})`).join("; ")}. A call returns them branded; make one from a string with \`${firstBrand[0]}.make(value)\`, or decode one with the Schema \`${firstBrand[0]}\`.`,
+				]),
+		...(secrets.length === 0
+			? []
+			: [
+					`- Secrets are taken as \`Redacted\` too, so they never reach a log or a trace: ${secrets.map(([call, paths]) => `\`${call}\` (${paths.map((path) => `\`${path}\``).join(", ")})`).join("; ")}. Read them with \`Config.Redacted("NAME")\`; the facade reveals each to ${docs.upstream.package} only in the call, shows it as \`Redacted\` where a property or a method's result holds what ${docs.upstream.package} kept of it, scrubs it from the message and string fields of the failures of that call and of the handles it made (\`<redacted>\`; a code never, nor a secret shorter than four characters), and prints as its handle's name, never ${docs.upstream.package}'s state. What still sees it is ${docs.upstream.package}'s own: \`.upstream\`, and ${docs.upstream.package}'s code (a logger you give it, a plugin it calls with its options).`,
+				]),
 		...(emitters.length === 0
 			? []
-			: [`- Events are Streams: \`events.<Handle>.<event>(handle)\` (${emitters.map((handle) => `\`events.${handle.name}\``).join(", ")}), listening for as long as the stream runs.`]),
+			: [
+					`- Events are Streams: \`events.<Handle>.<event>(handle)\` (${emitters.map((handle) => `\`events.${handle.name}\``).join(", ")}), listening for as long as the stream runs. An emitter cannot be paused: pass \`{ bufferSize: n }\` to keep only the newest \`n\` for a slow consumer.`,
+				]),
+		"- Two facades of one upstream object are `Equal` and hash alike: use them as keys of a `HashMap` or `HashSet`.",
 		`- What the facade does not wrap stays reachable: \`.upstream\` on every facade, \`Upstream\` for the package. Use them rather than importing \`${docs.upstream.package}\` again.`,
 	];
 }
@@ -413,34 +541,73 @@ function examplesMarkdown(docs: Docs, level: string): ReadonlyArray<string> {
 		"",
 		"Each is code from a test that passes in CI.",
 		"",
-		...docs.examples.flatMap((example) => [`${level}# ${example.title}`, "", "```ts", example.code.trimEnd(), "```", "", `From \`${example.source}\`.`, ""]),
+		...docs.examples.flatMap((example) => [
+			`${level}# ${example.title}`,
+			"",
+			"```ts",
+			example.code.trimEnd(),
+			"```",
+			"",
+			`From \`${example.source}\`.`,
+			"",
+		]),
 	];
 }
 
 /** The API as Markdown. */
 function apiMarkdown(docs: Docs): ReadonlyArray<string> {
 	const { api } = docs;
-	const code = (names: ReadonlyArray<string>) => (names.length === 0 ? "–" : names.map((name) => `\`${name}\``).join(", "));
+	const code = (names: ReadonlyArray<string>) =>
+		names.length === 0 ? "–" : names.map((name) => `\`${name}\``).join(", ");
 	return [
 		...(api.exports.length === 0 ? [] : [`Exports: ${code(api.exports)}.`, ""]),
-		...(api.services.length === 0 ? [] : [`Services: ${api.services.map((service) => `\`${service.name}\` (a \`${service.handle}\`, from \`${service.acquire}\`)`).join(", ")}.`, ""]),
+		...(api.services.length === 0
+			? []
+			: [
+					`Services: ${api.services.map((service) => `\`${service.name}\` (a \`${service.handle}\`, from \`${service.acquire}\`)`).join(", ")}.`,
+					"",
+				]),
+		...(api.secrets === undefined
+			? []
+			: [
+					`Secrets, also as \`Redacted\`: ${Object.entries(api.secrets)
+						.map(([call, paths]) => `\`${call}\` ${code(paths)}`)
+						.join("; ")}.`,
+					"",
+				]),
+		...(api.brands === undefined
+			? []
+			: [
+					`Brands: ${Object.entries(api.brands)
+						.map(([brand, places]) => `\`${brand}\` (${code(places)})`)
+						.join("; ")}.`,
+					"",
+				]),
 		...(api.errors.length === 0
 			? []
 			: [
-					"| Error | From |",
-					"|---|---|",
+					"| Error | From | Reasons |",
+					"|---|---|---|",
 					...api.errors.map((error, index) => {
-						const from = error.instanceOf !== undefined ? `\`${error.instanceOf}\`` : index === api.errors.length - 1 ? "any other failure" : "";
-						return `| \`${error.tag}\` | ${[from, ...(error.codes.length === 0 ? [] : [`codes ${code(error.codes)}`])].filter((part) => part !== "").join(", ")} |`;
+						const from =
+							error.instanceOf !== undefined
+								? `\`${error.instanceOf}\``
+								: index === api.errors.length - 1
+									? "any other failure"
+									: `codes ${code(error.codes)}`;
+						return `| \`${error.tag}\` | ${from} | ${code(error.codes)} |`;
 					}),
 					"",
 				]),
 		...(api.handles.length === 0
 			? []
 			: [
-					"| Handle | Effects | Streams | Events | Released by |",
-					"|---|---|---|---|---|",
-					...api.handles.map((handle) => `| \`${handle.name}\` | ${code(handle.effects)} | ${code(handle.streams)} | ${code(handle.events)} | ${handle.release === undefined ? "–" : `\`${handle.release}\``} |`),
+					"| Handle | Effects | Of an `Option` | Streams | Events | Released by |",
+					"|---|---|---|---|---|---|",
+					...api.handles.map(
+						(handle) =>
+							`| \`${handle.name}\` | ${code(handle.effects)} | ${code(handle.options ?? [])} | ${code(handle.streams)} | ${code(handle.events)} | ${handle.release === undefined ? "–" : `\`${handle.release}\``} |`,
+					),
 					"",
 				]),
 		...(api.elements.length === 0
@@ -448,7 +615,10 @@ function apiMarkdown(docs: Docs): ReadonlyArray<string> {
 			: [
 					"| Element | Binding | Properties | Events |",
 					"|---|---|---|---|",
-					...api.elements.map((element) => `| \`<${element.tag}>\` | \`${element.name}\`${element.changes.length === 0 ? "" : `, \`${element.name}Changes\``} | ${code(element.properties)} | ${code(element.events)} |`),
+					...api.elements.map(
+						(element) =>
+							`| \`<${element.tag}>\` | \`${element.name}\`${element.changes.length === 0 ? "" : `, \`${element.name}Changes\``} | ${code(element.properties)} | ${code(element.events)} |`,
+					),
 					"",
 				]),
 		...(api.mounts.length === 0 ? [] : [`Mounts: ${code(api.mounts.map((mount) => `${mount}Mount`))}.`, ""]),

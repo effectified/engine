@@ -1,0 +1,28 @@
+// The engine's own lint: oxlint over src/, test/*.ts, scripts/ and bin/ (`pnpm check`). The idioms of src/idioms.ts are not here:
+// they are the standard of the facades the engine generates, run by `effectNative` and test/engine.test.ts.
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript", "unicorn", "oxc", "import", "vitest"],
+	// oxlint's correctness category is code that is wrong or useless, with no false positives by design.
+	"categories": { "correctness": "error" },
+	// Generated output the tests compare byte for byte, and the engine's caches.
+	"ignorePatterns": ["test/fixtures/**", "dist/**", ".cache/**"],
+	"rules": {
+		// The rules of Biome's recommended set and of pi-effect's choices that its effect/oxlint.json keeps.
+		// A parameter a type predicate needs and nothing reads is named `_`.
+		"eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+		"eslint/no-useless-rename": "error",
+		"eslint/no-var": "error",
+		"eslint/prefer-const": "error",
+		"eslint/prefer-template": "error",
+		"typescript/consistent-type-imports": "error",
+		"typescript/no-inferrable-types": "error",
+		"typescript/no-namespace": "error",
+		"typescript/prefer-as-const": "error",
+		"unicorn/prefer-node-protocol": "error",
+		// Effect.fn and Effect.gen take a generator: a traced function with nothing to yield is still written as one.
+		"eslint/require-yield": "off",
+		// @effect/vitest's test blocks: an Effect test is `it.effect`, `it.live` or `it.scoped`.
+		"vitest/no-standalone-expect": ["error", { "additionalTestBlockFunctions": ["it.effect", "it.live", "it.scoped"] }]
+	}
+}

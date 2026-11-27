@@ -44,5 +44,7 @@ jobs:
           pnpm pack --pack-destination "$RUNNER_TEMP"
           url="https://github.com/effectified/engine/releases/download/v$version/effectified-engine-$version.tgz"
           printf '%s\n' "@effectified/engine $version, built from $SHA." "" '```sh' "pnpm add -D $url" '```' > "$RUNNER_TEMP/NOTES.md"
+          # The version's section of CHANGELOG.md, without its heading, when it has one.
+          awk -v heading="## $version" '$0 == heading { found = 1; next } found && /^## / { exit } found' CHANGELOG.md >> "$RUNNER_TEMP/NOTES.md"
           gh release create "v$version" --target "$SHA" --prerelease --title "@effectified/engine $version" \
             --notes-file "$RUNNER_TEMP/NOTES.md" "$RUNNER_TEMP/effectified-engine-$version.tgz"

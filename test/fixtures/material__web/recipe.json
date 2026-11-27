@@ -9,6 +9,7 @@
 	},
 	"name": "@effectified/material-web",
 	"prefix": "MaterialWeb",
+	"tagline": "inherited properties read from its types, a form and a dialog",
 	"exports": [],
 	"handles": {},
 	"errors": [
@@ -41,6 +42,7 @@
 		"effectUi": "2fd1a57",
 		"mounts": []
 	},
+	"revision": 4,
 	"decisions": [
 		{
 			"id": "exports",
@@ -187,6 +189,13 @@
 			"question": "Which events that upstream elements send each other does the facade offer?",
 			"answer": "none: md-assist-chip@update-focus, md-filter-chip@update-focus, md-input-chip@update-focus, md-suggestion-chip@update-focus, md-list-item@request-activation, md-select-option@request-selection, md-select-option@request-deselection, md-sub-menu@activate-typeahead, md-sub-menu@deactivate-items, md-sub-menu@deactivate-typeahead",
 			"why": "they coordinate a chip set, a select or a menu with its own items (focus moves, selection requests, typeahead); the containers report the outcome to an app (md-select change, md-menu closed), and offering the internal messages invites a view to depend on them",
+			"by": "agent"
+		},
+		{
+			"id": "revision",
+			"question": "Which revision of this upstream version is the facade?",
+			"answer": "4",
+			"why": "engine 0.4.0: the facade is held to @effect/tsgo and the GritQL idioms (its tsconfig.json carries the rules), its changes mounts read an element's state through effect's Record and Array, and its smoke test decodes the page's JSON through Schema",
 			"by": "agent"
 		}
 	]
